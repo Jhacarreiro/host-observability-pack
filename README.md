@@ -1,56 +1,81 @@
 # Host Observability Pack
 
-A compact Linux host + network observability stack focused on diagnosing stalls, blocked processes, swap pressure, filesystem trouble, network failures, and Docker outages.
+[![CI](https://github.com/Jhacarreiro/host-observability-pack/actions/workflows/ci.yml/badge.svg)](https://github.com/Jhacarreiro/host-observability-pack/actions/workflows/ci.yml)
 
-## Core: 3 containers
+A compact, self-hosted Linux observability stack for diagnosing host stalls, blocked processes, swap pressure, Btrfs trouble, network failures, and Docker outages — without turning monitoring into another large platform to operate.
 
-The default deployment intentionally uses only three containers:
+The default deployment uses **three containers**:
 
-| Container | Role |
+| Container | Responsibility |
 |---|---|
-| `observer-agent` | host metrics, Btrfs signals, ICMP/DNS/HTTP probes, incident snapshots |
-| `prometheus` | time-series history and alert rules |
-| `alertmanager` | grouping, retries, recovery notifications, optional Telegram |
+| `observer-agent` | host/runtime metrics, Btrfs signals, ICMP/DNS/HTTP probes, incident snapshots |
+| `prometheus` | time-series history and alert evaluation |
+| `alertmanager` | grouping, retries, recovery notifications, optional Telegram delivery |
 
-Grafana is optional and lives behind the Compose profile `ui`.
+Grafana is optional. A host watchdog is also optional and intentionally runs **outside Docker** under systemd so it can still observe the machine when Docker itself is unhealthy.
 
-The host watchdog is **not a container**. It runs from a systemd timer so it can keep observing when Docker itself is unhealthy.
+Current release: **v0.1.1**.
+
+## Why this exists
+
+A monitoring stack should still be useful when the failure is messy: high load, blocked I/O, an unhealthy container runtime, a DNS outage, or a filesystem stall where one noisy metric is not enough to explain what happened.
+
+Host Observability Pack is built around four ideas:
+
+- keep the always-on footprint small;
+- prefer persistent, multi-signal alert conditions over single noisy thresholds;
+- capture bounded evidence when incidents fire and resolve;
+- keep automatic remediation out of the monitoring path until it can be designed and tested separately.
+
+## Architecture
 
 ```text
-systemd watchdog (host)
-        |
-        v
- observer-agent ---> Prometheus ---> Alertmanager ---> Telegram (optional)
-     |                    |              |
-     |                    |              +--> webhook back to observer-agent
-     |                    |                   for incident snapshot
-     |                    v
-     +---------------> Grafana (optional)
+                 optional host watchdog
+                    (systemd timer)
+                         |
+                         v
++---------------- observer-agent ----------------+
+| host /proc + /sys       Btrfs signals          |
+| ICMP / DNS / HTTP       incident snapshots     |
++-------------------------+-----------------------+
+                          |
+                          v
+                     Prometheus
+                          |
+                          v
+                    Alertmanager
+                    /          \
+                   v            v
+              Telegram       snapshots
+              optional       via /alert
+
+                     Grafana
+                     optional
 ```
 
-## Why not six containers?
-
-The observer agent deliberately replaces the usual Node Exporter + Blackbox Exporter + separate incident-snapshot service. It reads only the host data needed by this project from read-only `/proc` and `/sys` mounts and performs the configured network probes itself.
-
-Prometheus and Alertmanager stay separate because they provide mature storage/rule evaluation and notification grouping/retry semantics that are not worth reimplementing.
+The observer agent deliberately folds together the roles commonly handled by Node Exporter, Blackbox Exporter, and a separate incident-snapshot service. Prometheus and Alertmanager remain separate because their storage, rule evaluation, grouping, retry, and resolved-notification behaviour is mature and worth keeping.
 
 ## Requirements
 
 - Linux host
 - Docker Engine
 - `docker compose` or `docker-compose`
-- Python 3 + systemd only for the optional host watchdog
+- Python 3 + systemd only if you install the optional host watchdog
 
-The stack is designed for native Linux, not Docker Desktop.
+The stack is intended for native Linux. Docker Desktop on macOS/Windows is not a supported target because the host-observation model relies on Linux `/proc` and `/sys`.
 
 ## Quick start
 
+Clone the repository and initialize a local deployment:
+
 ```bash
+git clone https://github.com/Jhacarreiro/host-observability-pack.git
+cd host-observability-pack
 ./scripts/init.sh
 ./scripts/compose.sh up -d --build
 ```
 
-Check the core:
+Check the three core services:
 
 ```bash
 curl -fsS http://127.0.0.1:9199/healthz
@@ -58,79 +83,143 @@ curl -fsS http://127.0.0.1:9090/-/healthy
 curl -fsS http://127.0.0.1:9093/-/healthy
 ```
 
-Run the validation gates:
+Run the local validation and public-sanitization gates:
 
 ```bash
 ./scripts/validate.sh
 ./scripts/audit-public
+./tests/test-audit-public.sh
 ```
 
-## Optional Grafana
+`init.sh` creates a private `.env` using the current user's UID/GID and generates the initial Alertmanager configuration.
 
-Grafana is not part of the default three-container core:
+## Default network probes
 
-```bash
-./scripts/compose.sh --profile ui up -d grafana
+Probe configuration lives in:
+
+```text
+observer-agent/probes.json
 ```
 
-By default it binds to `127.0.0.1:3000`. Change `GRAFANA_BIND` deliberately if you want LAN access.
+The repository ships only generic public targets. Replace or extend them for your own environment.
 
-## Probe configuration
+Supported probe types:
 
-Edit `observer-agent/probes.json`.
+- ICMP reachability;
+- DNS queries against explicit resolvers;
+- HTTP/HTTPS success and duration.
 
-The repository ships only generic public examples. Keep private routers, internal services and topology in local deployment config if the repository is public.
+The agent exports both success and latency metrics for every configured target.
 
-## Telegram
+Keep private routers, internal hostnames, production topology, and private service URLs in your local deployment config rather than committing them to a public fork.
 
-Telegram is optional. With no `TELEGRAM_CHAT_ID`, Alertmanager still posts firing/resolved transitions to the observer agent so incident snapshots are written locally.
+## Host and filesystem signals
 
-To enable Telegram:
+The observer agent reads host state from read-only `/proc` and `/sys` mounts and exports the signals required by the included alert model, including:
+
+- `load1`;
+- blocked (`D`) processes;
+- zombie processes;
+- swap totals and usage ratio;
+- swap-in/swap-out counters;
+- Btrfs last/max commit latency;
+- Btrfs device-error counters where the kernel exposes them.
+
+### Btrfs compatibility
+
+v0.1.1 supports both of the Btrfs device-error layouts used by Linux kernels in the wild:
+
+```text
+*/devinfo/*/error_stats
+*/devices/*/stats/*
+```
+
+The agent exports normalized error counters for the available layout.
+
+If the host is not using Btrfs, the Btrfs-specific metrics simply remain absent/zero as appropriate; the rest of the observer continues to work.
+
+## Alert model
+
+The included Prometheus rules cover:
+
+- probe target failures;
+- complete loss of a probe class;
+- observer-agent unavailability;
+- persistent blocked processes;
+- blocked processes combined with high load;
+- sustained high load;
+- heavy swap usage combined with active swap churn;
+- Btrfs device errors;
+- slow Btrfs commits;
+- optional watchdog missing/stale/Docker-unresponsive/recovery-gate states.
+
+The defaults are deliberately conservative. Tune thresholds for your hardware and workload before depending on them operationally.
+
+A core design principle is: **do not reboot a machine because one metric crossed one threshold**.
+
+## Incident snapshots
+
+Alertmanager posts firing and resolved transitions back to the observer agent at `/alert`.
+
+The agent writes bounded JSON evidence under:
+
+```text
+runtime/incidents/
+```
+
+Snapshots include the current observer/probe state plus host diagnostics such as:
+
+- route and neighbour tables;
+- `/proc/loadavg`;
+- `/proc/meminfo`;
+- `/proc/vmstat`;
+- `/proc/diskstats`;
+- `/proc/mdstat`;
+- the bounded blocked/zombie process summary already collected by the agent.
+
+Real incident captures may reveal internal topology. Review them before sharing or publishing.
+
+## Telegram notifications
+
+Telegram is optional. Without Telegram configured, Alertmanager still drives local incident snapshots.
+
+To enable Telegram, create the token file locally:
 
 ```bash
 printf '%s' 'YOUR_BOT_TOKEN' > secrets/telegram-bot-token
 chmod 600 secrets/telegram-bot-token
 ```
 
-Set the numeric chat ID in `.env`, then regenerate and restart Alertmanager:
+Set the numeric chat ID in `.env`:
+
+```text
+TELEGRAM_CHAT_ID=123456789
+```
+
+Then regenerate the Alertmanager configuration and restart only Alertmanager:
 
 ```bash
 python3 scripts/configure.py
 ./scripts/compose.sh restart alertmanager
 ```
 
-The token is mounted read-only and is ignored by Git.
+The token file is ignored by Git and mounted read-only into Alertmanager.
 
-## Included signals
-
-The observer agent exports Prometheus metrics for:
-
-- host `load1`;
-- blocked (`D`) processes and zombies;
-- swap totals, usage ratio and swap-in/swap-out counters;
-- Btrfs commit latency and device error counters where the kernel exposes them;
-- ICMP, DNS and HTTP probe success/duration;
-- optional host-watchdog freshness, Docker availability, critical streak and `would_recover` state.
-
-Alert defaults intentionally use persistence and multi-signal gating instead of reacting to one noisy sample.
-
-## Incident snapshots
-
-Alertmanager posts every firing/resolved transition to `observer-agent:/alert`. The agent stores bounded evidence under `runtime/incidents/`, including current metrics/probes and host route, neighbour, load, memory, vmstat, diskstats and mdraid state.
-
-Do not publish real incident captures without reviewing them for private topology.
+Notifications include both firing and resolved states so an incident has a clear recovery signal rather than only an initial alarm.
 
 ## Optional host watchdog
 
-Install only after the Docker core is healthy:
+The watchdog is intentionally **outside Docker**. Its purpose is to continue evaluating the host if Docker becomes slow or unavailable.
+
+Install it only after the three-container core is healthy:
 
 ```bash
 sudo ./scripts/install-watchdog.sh --user "$USER"
 ```
 
-The selected user must be able to run `docker info` non-interactively.
+The selected user should be able to run `docker info` without an interactive password.
 
-The watchdog runs every minute and is **observe-only** in v0.1. A hard candidate is one of:
+The default hard-candidate model is:
 
 ```text
 D-state >= 3 AND load1 >= 8
@@ -140,42 +229,151 @@ OR
 Docker unavailable AND D-state >= 2 AND load1 >= 8
 ```
 
-`would_recover=1` is reached only after five consecutive hard candidates. No restart/reboot actuator is included.
+`would_recover=1` is reached only after five consecutive hard candidates.
 
-Runtime state lives under `/var/lib/host-observability-pack/watchdog/`. After installing the watchdog, set these private deployment values in `.env` and recreate `observer-agent`:
+**v0.1.x is observe-only.** The watchdog records evidence and exposes when a future recovery actuator might be justified, but it does not kill processes, restart Docker, or reboot the machine.
+
+After installation, point the observer agent at the host watchdog state in your private `.env`:
 
 ```text
 WATCHDOG_EXPECTED=1
 WATCHDOG_STATE_DIR=/var/lib/host-observability-pack/watchdog
 ```
 
-Without the watchdog, the default local `./runtime/watchdog` path is harmless and keeps the three-container core self-contained.
+Then recreate only the observer agent:
+
+```bash
+./scripts/compose.sh up -d --no-deps --force-recreate observer-agent
+```
+
+## Optional Grafana
+
+Grafana is deliberately outside the default core:
+
+```bash
+./scripts/compose.sh --profile ui up -d grafana
+```
+
+By default it binds to loopback. Change `GRAFANA_BIND` only when you deliberately want to expose it on a trusted interface or behind your own authenticated reverse proxy.
+
+The stack remains fully functional for collection, alerting, Telegram, and incident snapshots without Grafana.
 
 ## Security model
 
-- all core HTTP endpoints bind to loopback by default;
-- no Docker socket is mounted into any container;
+The default deployment is intentionally restrictive:
+
+- core HTTP endpoints bind to loopback;
+- no container receives the Docker socket;
 - `/proc` and `/sys` are mounted read-only into the observer agent;
-- the agent gets only `NET_RAW` for ICMP;
-- its root filesystem is read-only;
+- the observer agent runs non-root by default;
+- the observer agent root filesystem is read-only;
+- `NET_RAW` is added only for ICMP;
 - Telegram credentials stay outside Git;
-- the watchdog runs as an unprivileged user and v0.1 cannot perform recovery actions.
+- the watchdog runs as an unprivileged host user;
+- the watchdog has no automatic remediation capability in v0.1.x.
 
-See `SECURITY.md` before exposing any endpoint beyond localhost.
+Read [`SECURITY.md`](SECURITY.md) before exposing endpoints beyond localhost.
 
-## Public-release gate
+## Operations
 
-Before publishing a branch or tag:
+Show the effective services:
+
+```bash
+./scripts/compose.sh config --services
+```
+
+Expected default core:
+
+```text
+observer-agent
+prometheus
+alertmanager
+```
+
+Check current observer status:
+
+```bash
+curl -fsS http://127.0.0.1:9199/status
+```
+
+Check probe metrics:
+
+```bash
+curl -fsS http://127.0.0.1:9199/metrics | grep '^observer_probe_'
+```
+
+Check Prometheus targets:
+
+```bash
+curl -fsS http://127.0.0.1:9090/api/v1/targets
+```
+
+Check rules:
+
+```bash
+curl -fsS http://127.0.0.1:9090/api/v1/rules
+```
+
+Tail the core logs:
+
+```bash
+./scripts/compose.sh logs --tail=200 observer-agent prometheus alertmanager
+```
+
+## Updating
+
+Before updating a live deployment:
+
+```bash
+git fetch --tags
+./scripts/audit-public
+./scripts/validate.sh
+```
+
+Review the release notes, then update one component at a time where practical. Preserve Prometheus and Grafana named volumes if you recreate containers.
+
+The project intentionally keeps environment-specific configuration separate from public source. Avoid carrying local runtime patches in the repository; upstream reusable fixes should be made in the public project and local differences should stay in private config.
+
+## Validation and CI
+
+The repository includes local and CI gates for:
+
+- Python syntax;
+- JSON syntax;
+- Docker Compose validation;
+- Prometheus config/rule validation;
+- Alertmanager config validation;
+- Telegram config generation;
+- Btrfs parser regression coverage;
+- observer-agent image build;
+- public sanitization;
+- negative leak fixtures for private IPs, operator paths, and credential-like material.
+
+Before publishing a branch, tag, or release:
 
 ```bash
 ./scripts/audit-public
+./tests/test-audit-public.sh
 ```
 
-The gate rejects common credentials, tracked runtime/secrets, private IPv4 addresses and operator-specific home/workspace paths.
+## Project scope and limits
 
-## Status
+This project is deliberately small. It is not intended to replace a full metrics platform, SIEM, distributed tracing system, or general-purpose automation framework.
 
-v0.1 is intentionally conservative: observe, record, alert and build evidence first. Automatic remediation belongs in a later opt-in actuator with explicit cooldown and anti-loop safeguards.
+It works best when you want a compact always-on safety layer for one Linux host or homelab server and care more about clear failure boundaries and incident evidence than hundreds of dashboards.
+
+Known limitations:
+
+- Linux only;
+- the observer sees the host from the network interfaces available to that host;
+- it cannot independently prove failures on another client path (for example a separate Wi-Fi-only path) without another vantage point;
+- automatic remediation/reboot is intentionally out of scope for v0.1.x.
+
+## Contributing
+
+Contributions are welcome. Keep examples portable and synthetic, and do not submit private infrastructure details or real incident captures containing sensitive topology.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
