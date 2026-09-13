@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+fail=0
+bad(){ echo "PUBLIC AUDIT FAIL: $*" >&2; fail=1; }
+tracked=$(git ls-files)
+echo "$tracked" | grep -Eq '(^|/)\.env$|(^|/)secrets/[^.]|(^|/)runtime/[^.]|\.pem$|\.key$|id_rsa|id_ed25519' && bad "tracked generated/secrets material" || true
+if git grep -nE '(^|[^0-9])(10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3})([^0-9]|$)' -- . ':!scripts/audit-public' >/tmp/hop-audit-ip 2>/dev/null; then cat /tmp/hop-audit-ip >&2; bad "private IPv4 address found"; fi
+rm -f /tmp/hop-audit-ip
+if git grep -nE '/home/[A-Za-z0-9._-]+/|/data/workspace/' -- . ':!scripts/audit-public' >/tmp/hop-audit-path 2>/dev/null; then cat /tmp/hop-audit-path >&2; bad "operator-specific absolute path found"; fi
+rm -f /tmp/hop-audit-path
+if git grep -nEI 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|Authorization:[[:space:]]*Bearer[[:space:]]+[A-Za-z0-9._-]{12,}|(TOKEN|PASSWORD|SECRET|API_KEY)[[:space:]]*=[[:space:]]*[^$<{[:space:]][^[:space:]]{7,}' -- . ':!scripts/audit-public' >/tmp/hop-audit-secret 2>/dev/null; then cat /tmp/hop-audit-secret >&2; bad "credential-like material found"; fi
+rm -f /tmp/hop-audit-secret
+[ "$fail" -eq 0 ] || exit 1
+echo "public audit: PASS"

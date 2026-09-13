@@ -1,0 +1,39 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure snapshot-only mode
+        run: python3 scripts/configure.py --env .env.example
+      - name: Public sanitization gate
+        run: |
+          ./scripts/audit-public
+          ./tests/test-audit-public.sh
+      - name: Python and JSON syntax
+        run: |
+          ./scripts/check-python.py
+          python3 -m json.tool observer-agent/probes.json >/dev/null
+          python3 -m json.tool grafana/dashboards/overview.json >/dev/null
+      - name: Compose syntax
+        run: docker compose config >/dev/null
+      - name: Prometheus config and rules
+        run: |
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/prometheus:/etc/prometheus:ro" prom/prometheus:v3.14.0 check config /etc/prometheus/prometheus.yml
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/prometheus:/etc/prometheus:ro" prom/prometheus:v3.14.0 check rules /etc/prometheus/alerts.yml
+      - name: Alertmanager config
+        run: docker run --rm --entrypoint /bin/amtool -v "$PWD/runtime/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro" prom/alertmanager:v0.34.0 check-config /etc/alertmanager/alertmanager.yml
+      - name: Telegram config generation
+        run: |
+          printf '%s' 'synthetic-ci-token-not-real' > secrets/telegram-bot-token
+          TELEGRAM_CHAT_ID=123456789 python3 scripts/configure.py --env .env.example
+          docker run --rm --entrypoint /bin/amtool -v "$PWD/runtime/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro" prom/alertmanager:v0.34.0 check-config /etc/alertmanager/alertmanager.yml
+          rm -f secrets/telegram-bot-token
+      - name: Build observer agent
+        run: docker compose build observer-agent

@@ -1,0 +1,55 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "id": null,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Host now",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "observer_host_load1", "legendFormat": "load1", "refId": "A"},
+        {"expr": "observer_host_procs_blocked", "legendFormat": "D-state", "refId": "B"},
+        {"expr": "observer_host_swap_used_ratio * 100", "legendFormat": "swap %", "refId": "C"},
+        {"expr": "observer_btrfs_last_commit_seconds", "legendFormat": "Btrfs commit s", "refId": "D"}
+      ],
+      "options": {"reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""}, "orientation": "horizontal", "textMode": "auto", "wideLayout": true},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Host pressure signals",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "observer_host_load1", "legendFormat": "load1", "refId": "A"},
+        {"expr": "observer_host_procs_blocked", "legendFormat": "D-state", "refId": "B"},
+        {"expr": "observer_btrfs_last_commit_seconds", "legendFormat": "Btrfs commit", "refId": "C"}
+      ],
+      "fieldConfig": {"defaults": {"min": 0}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 7}
+    },
+    {
+      "type": "timeseries",
+      "title": "Network probes",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "observer_probe_success", "legendFormat": "{{kind}} {{target}}", "refId": "A"}
+      ],
+      "fieldConfig": {"defaults": {"min": 0, "max": 1}, "overrides": []},
+      "options": {"legend": {"displayMode": "table", "placement": "bottom", "showLegend": true}},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 7}
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 41,
+  "tags": ["host", "network", "observability"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "title": "Host Observability Pack",
+  "uid": "host-observability-pack",
+  "version": 1
+}

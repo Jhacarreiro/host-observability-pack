@@ -1,0 +1,83 @@
+services:
+  observer-agent:
+    build: ./observer-agent
+    image: host-observability-pack/observer-agent:local
+    container_name: host-observer-agent
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    user: "${PUID:-1000}:${PGID:-1000}"
+    cap_add:
+      - NET_RAW
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      OBSERVER_BIND: 127.0.0.1
+      OBSERVER_PORT: "9199"
+      OBSERVER_INTERVAL_SECONDS: "10"
+      OBSERVER_PROBE_CONFIG: /config/probes.json
+      HOST_PROC: /host/proc
+      HOST_SYS: /host/sys
+      WATCHDOG_EXPECTED: ${WATCHDOG_EXPECTED:-0}
+      WATCHDOG_STATE: /watchdog/current.json
+    volumes:
+      - ./observer-agent/probes.json:/config/probes.json:ro
+      - ./runtime/incidents:/data/incidents
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - ${WATCHDOG_STATE_DIR:-/var/lib/host-observability-pack/watchdog}:/watchdog:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    container_name: host-observer-prometheus
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-14d}
+      - --web.listen-address=127.0.0.1:9090
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.0
+    container_name: host-observer-alertmanager
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.listen-address=127.0.0.1:9093
+    volumes:
+      - ./runtime/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./secrets:/run/secrets:ro
+      - alertmanager-data:/alertmanager
+
+  grafana:
+    image: grafana/grafana:13.2.0
+    container_name: host-observer-grafana
+    profiles: ["ui"]
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      GF_SERVER_HTTP_ADDR: ${GRAFANA_BIND:-127.0.0.1}
+      GF_SERVER_HTTP_PORT: ${GRAFANA_PORT:-3000}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:

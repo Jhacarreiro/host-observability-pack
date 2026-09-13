@@ -1,0 +1,10 @@
+.env
+secrets/*
+!secrets/.gitkeep
+runtime/*
+!runtime/.gitkeep
+!runtime/incidents/.gitkeep
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store

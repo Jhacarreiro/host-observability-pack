@@ -1,0 +1,11 @@
+{
+  "icmp": ["1.1.1.1", "8.8.8.8"],
+  "dns": [
+    {"server": "1.1.1.1", "name": "example.com"},
+    {"server": "8.8.8.8", "name": "example.com"}
+  ],
+  "http": [
+    "https://www.cloudflare.com/cdn-cgi/trace",
+    "https://www.google.com/generate_204"
+  ]
+}

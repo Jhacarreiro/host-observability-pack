@@ -1,0 +1,122 @@
+groups:
+  - name: observer-agent
+    rules:
+      - alert: ObserverAgentDown
+        expr: up{job="observer-agent"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          scope: host-observability-pack
+        annotations:
+          summary: "Observer agent is unavailable"
+
+      - alert: ProbeTargetDown
+        expr: observer_probe_success == 0
+        for: 1m
+        labels:
+          severity: warning
+          scope: host-observability-pack
+        annotations:
+          summary: "{{ $labels.kind }} probe to {{ $labels.target }} is failing"
+
+      - alert: AllProbeTargetsDown
+        expr: (count by (kind) (observer_probe_success) > 0) and (sum by (kind) (observer_probe_success) == 0)
+        for: 1m
+        labels:
+          severity: critical
+          scope: host-observability-pack
+        annotations:
+          summary: "All {{ $labels.kind }} probe targets are failing"
+
+  - name: host-runtime
+    rules:
+      - alert: HostBlockedProcesses
+        expr: observer_host_procs_blocked >= 2
+        for: 5m
+        labels:
+          severity: warning
+          scope: host-observability-pack
+        annotations:
+          summary: "Multiple processes are persistently blocked in D-state"
+
+      - alert: HostStorageContention
+        expr: (observer_host_procs_blocked >= 3) and (observer_host_load1 > 8)
+        for: 2m
+        labels:
+          severity: critical
+          scope: host-observability-pack
+        annotations:
+          summary: "Blocked processes coincide with sustained high load"
+
+      - alert: HostHighLoad
+        expr: observer_host_load1 > 12
+        for: 10m
+        labels:
+          severity: warning
+          scope: host-observability-pack
+        annotations:
+          summary: "Host load1 has remained above 12"
+
+      - alert: HostSwapChurn
+        expr: (observer_host_swap_used_ratio > 0.90) and ((rate(observer_vmstat_pswpin_total[5m]) + rate(observer_vmstat_pswpout_total[5m])) > 100)
+        for: 5m
+        labels:
+          severity: warning
+          scope: host-observability-pack
+        annotations:
+          summary: "Swap is over 90% used and actively churning"
+
+      - alert: BtrfsDeviceError
+        expr: increase(observer_btrfs_device_errors_total[5m]) > 0
+        labels:
+          severity: critical
+          scope: host-observability-pack
+        annotations:
+          summary: "Btrfs reported a new device error"
+
+      - alert: BtrfsSlowCommit
+        expr: observer_btrfs_last_commit_seconds > 10
+        for: 30s
+        labels:
+          severity: warning
+          scope: host-observability-pack
+        annotations:
+          summary: "Btrfs commits are taking more than 10 seconds"
+
+  - name: host-watchdog
+    rules:
+      - alert: HostWatchdogMissing
+        expr: (observer_watchdog_expected == 1) and (observer_watchdog_present == 0)
+        for: 3m
+        labels:
+          severity: critical
+          scope: host-observability-pack
+        annotations:
+          summary: "Host watchdog is expected but its state file is missing"
+
+      - alert: HostWatchdogStale
+        expr: (observer_watchdog_expected == 1) and (observer_watchdog_age_seconds > 180)
+        for: 2m
+        labels:
+          severity: critical
+          scope: host-observability-pack
+        annotations:
+          summary: "Host watchdog has not reported for more than 3 minutes"
+
+      - alert: HostWatchdogDockerUnresponsive
+        expr: (observer_watchdog_expected == 1) and (observer_watchdog_docker_up == 0)
+        for: 2m
+        labels:
+          severity: critical
+          scope: host-observability-pack
+        annotations:
+          summary: "Host watchdog cannot reach the Docker daemon"
+
+      - alert: HostWatchdogWouldRecover
+        expr: (observer_watchdog_expected == 1) and (observer_watchdog_would_recover == 1)
+        for: 1m
+        labels:
+          severity: critical
+          scope: host-observability-pack
+        annotations:
+          summary: "Sustained multi-signal host condition reached the recovery gate"

@@ -1,0 +1,28 @@
+[Unit]
+Description=Host Observability Pack watchdog (observe-only)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=@WATCHDOG_USER@
+Group=@WATCHDOG_GROUP@
+EnvironmentFile=-/etc/host-observability-pack/watchdog.env
+ExecStart=/usr/bin/python3 /usr/local/lib/host-observability-pack/watchdog.py
+TimeoutStartSec=20s
+UMask=0027
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

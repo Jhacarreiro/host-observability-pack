@@ -1,0 +1,6 @@
+.git
+.env
+secrets
+runtime
+__pycache__
+*.pyc
