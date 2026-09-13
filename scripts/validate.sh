@@ -3,6 +3,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 ./scripts/check-python.py
+./tests/test-observer-btrfs.py
 python3 -m json.tool observer-agent/probes.json >/dev/null
 python3 -m json.tool grafana/dashboards/overview.json >/dev/null
 tmpdir=$(mktemp -d /tmp/host-observability-pack.XXXXXX)

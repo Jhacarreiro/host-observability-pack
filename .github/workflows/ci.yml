@@ -19,6 +19,7 @@ jobs:
       - name: Python and JSON syntax
         run: |
           ./scripts/check-python.py
+          ./tests/test-observer-btrfs.py
           python3 -m json.tool observer-agent/probes.json >/dev/null
           python3 -m json.tool grafana/dashboards/overview.json >/dev/null
       - name: Compose syntax

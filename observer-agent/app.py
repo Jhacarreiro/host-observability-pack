@@ -66,9 +66,20 @@ def btrfs_stats():
                 if len(parts)!=2:continue
                 if parts[0]=="last_commit_ms":last=max(last,int(parts[1]))
                 if parts[0]=="max_commit_ms":maxc=max(maxc,int(parts[1]))
-        for p in base.glob("*/devices/*/stats/*"):
-            try:errors[p.name]=errors.get(p.name,0)+int(p.read_text().strip())
-            except Exception:pass
+        error_stat_files=list(base.glob("*/devinfo/*/error_stats"))
+        if error_stat_files:
+            for p in error_stat_files:
+                try:
+                    for line in p.read_text().splitlines():
+                        parts=line.split()
+                        if len(parts)!=2:continue
+                        name=parts[0].removesuffix("_errs")
+                        errors[name]=errors.get(name,0)+int(parts[1])
+                except Exception:pass
+        else:
+            for p in base.glob("*/devices/*/stats/*"):
+                try:errors[p.name]=errors.get(p.name,0)+int(p.read_text().strip())
+                except Exception:pass
     except Exception:pass
     return last/1000.0,maxc/1000.0,errors
 
