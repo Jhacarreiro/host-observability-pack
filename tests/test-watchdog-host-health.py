@@ -40,10 +40,24 @@ with tempfile.TemporaryDirectory() as tmp:
     assess(state,6060,("b","running","no",False))
     assert sorted(state["oom_tracking"])==["b"], "removed containers are dropped from tracking"
 
+    v1=tmp/"cgroup"/"memory"/"system.slice"/"docker-c.scope"; v1.mkdir(parents=True)
+    (v1/"memory.oom_control").write_text("oom_kill_disable 0\nunder_oom 0\noom_kill 4\n")
+    assert wd.cgroup_oom_kills("c")==4, "cgroup v1 systemd layout is read"
+
+    def container(name,status,policy,code):
+        return {"Id":name,"Name":"/"+name,"State":{"Status":status,"ExitCode":code,"OOMKilled":False},"HostConfig":{"RestartPolicy":{"Name":policy}}}
+    fake=[container("crashed","exited","always",1),container("oneshot","exited","on-failure",0),
+          container("stopped","exited","unless-stopped",143),container("manual","exited","no",137)]
+    wd.run=lambda cmd,timeout=None:(0,"\n".join(c["Id"] for c in fake),"") if cmd[1]=="ps" else (0,json.dumps(fake),"")
+    inv=wd.docker_inventory()
+    assert inv["ok"] and inv["stopped_restartable"]==1, "only the unexpected non-zero exit with a restart policy counts"
+    wd.run=lambda cmd,timeout=None:(1,"","Cannot connect")
+    assert wd.docker_inventory()["ok"] is False
+
     current=tmp/"current.json"
     current.write_text(json.dumps({"timestamp":"2026-01-01T00:00:00+00:00","docker_up":True,"warning":True,"load5":1.5,"memory_used_ratio":0.4,
         "temperature_max_celsius":None,"ups_configured":True,"ups_data_fresh":False,"systemd_failed":{"count":2,"units":["x.service","y.service"]},
-        "docker_inventory":{"ok":True,"oom_killed":1,"stopped_restartable":0}}))
+        "temperature_warn_celsius":70,"docker_inventory":{"ok":True,"oom_killed":1,"stopped_restartable":0}}))
     os.environ["INCIDENT_DIR"]=str(tmp/"incidents"); os.environ["WATCHDOG_STATE"]=str(current)
     obs=load("observer_agent",ROOT/"observer-agent"/"app.py")
     s=obs.watchdog_state()
@@ -51,6 +65,11 @@ with tempfile.TemporaryDirectory() as tmp:
     assert s["memory_used_ratio"]==0.4 and s["temperature_max_celsius"]==-1.0
     assert s["ups_configured"]==1 and s["ups_data_fresh"]==0
     assert s["systemd_failed"]==2 and s["docker_oom_killed"]==1
+    assert s["temperature_warn_celsius"]==70 and s["docker_inventory_ok"]==1
+
+    current.write_text(json.dumps({"timestamp":"2026-01-01T00:00:00+00:00","docker_up":True,"docker_inventory":{"ok":False,"error":"x"}}))
+    s=obs.watchdog_state()
+    assert s["extended_available"]==1 and s["docker_inventory_ok"]==0, "a failed inventory is exported, not hidden as healthy zeros"
 
     current.write_text(json.dumps({"timestamp":"2026-01-01T00:00:00+00:00","docker_up":True}))
     assert obs.watchdog_state()["extended_available"]==0, "older watchdog state keeps host-health alerts gated off"

@@ -150,15 +150,18 @@ def docker_inventory():
         policy=str(((obj.get("HostConfig") or {}).get("RestartPolicy") or {}).get("Name") or "no"); name=str(obj.get("Name") or "").lstrip("/")
         inv["running"]+=status=="running"; inv["restarting"]+=status=="restarting"
         if status=="running" and health=="unhealthy":inv["unhealthy"]+=1
-        if status not in {"running","restarting"} and policy not in {"","no"}:inv["stopped_restartable"]+=1
+        # Exit 0 is a finished one-shot (on-failure does not restart it) and 143 is a graceful `docker stop`;
+        # neither is an unexpected stop.
+        exit_code=int(st.get("ExitCode") or 0)
+        if status not in {"running","restarting","created"} and policy not in {"","no"} and exit_code not in {0,143}:inv["stopped_restartable"]+=1
         if (status=="running" and health=="unhealthy") or status=="restarting":inv["problems"].append({"name":name,"status":status,"health":health,"restart_policy":policy})
         inv["containers"].append({"id":str(obj.get("Id") or ""),"name":name,"status":status,"policy":policy,"oom_flag":bool(st.get("OOMKilled"))})
     return inv
 
 def cgroup_oom_kills(cid):
-    # cgroup v2 (systemd and cgroupfs drivers) exposes memory.events; cgroup v1 exposes memory.oom_control.
+    # cgroup v2 exposes memory.events and cgroup v1 memory.oom_control, each under the systemd or cgroupfs driver layout.
     for path in (CGROUP_ROOT/"system.slice"/f"docker-{cid}.scope"/"memory.events",CGROUP_ROOT/"docker"/cid/"memory.events",
-                 CGROUP_ROOT/"memory"/"docker"/cid/"memory.oom_control"):
+                 CGROUP_ROOT/"memory"/"system.slice"/f"docker-{cid}.scope"/"memory.oom_control",CGROUP_ROOT/"memory"/"docker"/cid/"memory.oom_control"):
         try:
             for line in path.read_text().splitlines():
                 k,_,v=line.partition(" ")
@@ -226,7 +229,7 @@ def main():
              ups_state["on_battery"] or bool(failed["count"]) or docker_warning)
     m={"timestamp":now_iso,"mode":MODE,"load1":load1,"load5":load5,"load15":load15,"dstate":d,"zombies":z,"swap_used_ratio":round(swap,6),
        "memory_used_ratio":round(memory_used_ratio(mem),6),"temperature_max_celsius":temp,"filesystems":fs_items,"filesystem_max_used_ratio":fs_max,
-       "mdraid_degraded":md_degraded,"mdraid_sync_active":md_sync,"mdraid_sync_progress_percent":md_progress,
+       "temperature_warn_celsius":TEMP_WARN,"filesystem_warn_ratio":FS_WARN,"mdraid_degraded":md_degraded,"mdraid_sync_active":md_sync,"mdraid_sync_progress_percent":md_progress,
        "ups_configured":ups_state["configured"],"ups_data_fresh":ups_state["data_fresh"],"ups_on_battery":ups_state["on_battery"],"ups_low_battery":ups_state["low_battery"],
        "systemd_failed":failed,"docker_inventory":inv,"docker_unhealthy":int(inv.get("unhealthy") or 0),"docker_restarting":int(inv.get("restarting") or 0),
        "docker_up":dup,"docker_latency_seconds":round(dlat,4),

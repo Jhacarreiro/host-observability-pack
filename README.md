@@ -247,9 +247,15 @@ Each run also records host health in `current.json`:
 | Docker container states | `docker ps -aq` + `docker inspect` | — |
 | Docker OOM kills | cgroup `oom_kill` counter per running container | `WATCHDOG_OOM_WINDOW_SECONDS`, `WATCHDOG_OOM_RECURRING_KILLS` |
 
+`WATCHDOG_TEMP_WARN_C` and `WATCHDOG_FILESYSTEM_WARN_RATIO` are exported as `observer_watchdog_temperature_warn_celsius` and `observer_watchdog_filesystem_warn_ratio`, and the alert rules compare against them, so changing the watchdog setting changes when the alert fires.
+
+`HostDockerContainerStopped` counts a container only when it is stopped with a restart policy other than `no` **and** an exit code other than `0` (a finished one-shot, which `on-failure` does not restart) or `143` (a graceful `docker stop`). A manual stop of a process that ignores SIGTERM exits `137` and still counts; set `--restart no` or remove such containers.
+
+Docker health rules are gated on `observer_watchdog_docker_inventory_ok`. When `docker info` works but `docker ps`/`docker inspect` fails, `HostDockerInventoryUnavailable` fires instead of the Docker rules silently reading zeros.
+
 #### Docker OOM semantics
 
-Docker keeps `State.OOMKilled=true` until a container restarts, even when the kernel killed a single child process once and the container kept running. Alerting on that flag fires forever. The watchdog instead reads each running container's cgroup `oom_kill` counter (cgroup v2 `memory.events` for the systemd and cgroupfs drivers, cgroup v1 `memory.oom_control`) and keeps per-container kill timestamps in `state.json`.
+Docker keeps `State.OOMKilled=true` until a container restarts, even when the kernel killed a single child process once and the container kept running. Alerting on that flag fires forever. The watchdog instead reads each running container's cgroup `oom_kill` counter (cgroup v2 `memory.events` or cgroup v1 `memory.oom_control`, under either the systemd or the cgroupfs driver layout) and keeps per-container kill timestamps in `state.json`.
 
 A container counts towards `observer_watchdog_docker_oom_killed` only when it has at least `WATCHDOG_OOM_RECURRING_KILLS` (default 2) new kills within `WATCHDOG_OOM_WINDOW_SECONDS` (default 1800), or when it was stopped by an OOM and has a restart policy other than `no`. An isolated kill is listed in `current.json` under `docker_inventory.oom_recent` with `active=false` and does not alert. The first run baselines existing counters, so past kills never alert after an install or upgrade.
 
