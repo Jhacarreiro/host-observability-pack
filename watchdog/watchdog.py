@@ -88,8 +88,8 @@ def budget(timeout):
     return min(timeout,RUN_BUDGET-(time.monotonic()-START))
 
 def docker_probe():
-    start=time.monotonic(); t=budget(DOCKER_TIMEOUT)
-    if t<0.5:SKIPPED.append("docker info"); return False,0.0,125
+    # Runs first, so the budget never cuts it to zero; it is never skipped, so docker_up always reflects a real probe.
+    start=time.monotonic(); t=max(0.5,budget(DOCKER_TIMEOUT))
     try:
         p=subprocess.run([DOCKER,"info"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=t,check=False)
         return p.returncode==0,time.monotonic()-start,p.returncode
@@ -166,7 +166,7 @@ def docker_inventory():
         exit_code=int(st.get("ExitCode") or 0)
         if status not in {"running","restarting","created"} and policy not in {"","no"} and exit_code not in {0,143}:inv["stopped_restartable"]+=1
         if (status=="running" and health=="unhealthy") or status=="restarting":inv["problems"].append({"name":name,"status":status,"health":health,"restart_policy":policy})
-        inv["containers"].append({"id":str(obj.get("Id") or ""),"name":name,"status":status,"policy":policy,"oom_flag":bool(st.get("OOMKilled"))})
+        inv["containers"].append({"id":str(obj.get("Id") or ""),"name":name,"status":status,"policy":policy,"oom_flag":bool(st.get("OOMKilled")),"exit_code":exit_code})
     return inv
 
 def cgroup_oom_kills(cid):
@@ -188,6 +188,8 @@ def oom_assess(inv,state,now):
     from the cgroup oom_kill counter instead. A container is active only with OOM_KILLS
     kills inside OOM_WINDOW seconds, or when a restartable container was left stopped by an
     OOM. Isolated kills are listed in oom_recent without alerting.
+    Because the flag is sticky, a stop only counts as an OOM stop when the main process
+    died from SIGKILL (exit 137); a later graceful stop (0 or 143) does not.
     """
     first=("oom_tracking" not in state); prev=state.get("oom_tracking") or {}; tracking={}; recent=[]; active=0
     for c in inv.pop("containers",[]):
@@ -198,7 +200,7 @@ def oom_assess(inv,state,now):
             # The first run baselines existing counters; a restarted container gets a fresh counter.
             new=(0 if first else count) if base is None else (count-base if count>=base else count)
             events+=[now]*new
-        stopped=c["oom_flag"] and c["status"] not in {"running","restarting"} and c["policy"] not in {"","no"}
+        stopped=c["oom_flag"] and c.get("exit_code")==137 and c["status"] not in {"running","restarting"} and c["policy"] not in {"","no"}
         is_active=stopped or len(events)>=OOM_KILLS
         tracking[c["id"]]={"name":c["name"],"count":count,"events":events}
         if events or c["oom_flag"]:recent.append({"name":c["name"],"status":c["status"],"oom_flag":c["oom_flag"],"kills_in_window":len(events),"active":is_active})

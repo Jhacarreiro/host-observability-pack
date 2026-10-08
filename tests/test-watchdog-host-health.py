@@ -18,8 +18,8 @@ with tempfile.TemporaryDirectory() as tmp:
     def kills(cid,n):
         d=tmp/"cgroup"/"system.slice"/f"docker-{cid}.scope"; d.mkdir(parents=True,exist_ok=True)
         (d/"memory.events").write_text(f"low 0\nhigh 0\nmax 3\noom {n}\noom_kill {n}\n")
-    def assess(state,now,*containers):
-        inv={"problems":[],"containers":[{"id":c,"name":c,"status":s,"policy":p,"oom_flag":f} for c,s,p,f in containers]}
+    def assess(state,now,*containers,exit_code=137):
+        inv={"problems":[],"containers":[{"id":c,"name":c,"status":s,"policy":p,"oom_flag":f,"exit_code":exit_code} for c,s,p,f in containers]}
         wd.oom_assess(inv,state,now); return inv
 
     state={}
@@ -34,6 +34,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert assess(state,1120+wd.OOM_WINDOW,("a","running","always",True))["oom_killed"]==0, "the alert clears once kills leave the window"
     assert assess(state,5000,("a","exited","always",True))["oom_killed"]==1, "a restartable container stopped by OOM alerts"
     assert assess(state,5000,("a","exited","no",True))["oom_killed"]==0, "a container without restart policy does not"
+    assert assess(state,5000,("a","exited","always",True),exit_code=143)["oom_killed"]==0, "a graceful stop with a sticky OOM flag does not"
     kills("a",1)
     inv=assess(state,6000,("a","running","always",False))
     assert state["oom_tracking"]["a"]["events"]==[6000], "a restarted container's fresh counter is counted"
@@ -74,6 +75,8 @@ with tempfile.TemporaryDirectory() as tmp:
     assert s["extended_available"]==1 and s["warning"]==1
     assert s["memory_used_ratio"]==0.4 and s["temperature_max_celsius"]==-1.0
     assert s["ups_configured"]==1 and s["ups_data_fresh"]==0
+    current.write_text(json.dumps({"timestamp":"2026-01-01T00:00:00+00:00","docker_inventory":{"ok":True},"ups_configured":True,"ups_data_fresh":None}))
+    assert obs.watchdog_state()["ups_data_fresh"]==-1, "unknown UPS freshness is exported as -1, not fresh or stale"
     assert s["systemd_failed"]==2 and s["docker_oom_killed"]==1
     assert s["temperature_warn_celsius"]==70 and s["docker_inventory_ok"]==1
 
