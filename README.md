@@ -253,6 +253,8 @@ Each run also records host health in `current.json`:
 
 Docker health rules are gated on `observer_watchdog_docker_inventory_ok`. When `docker info` works but `docker ps`/`docker inspect` fails, `HostDockerInventoryUnavailable` fires instead of the Docker rules silently reading zeros.
 
+All probe subprocesses share one run budget, `WATCHDOG_RUN_BUDGET_SECONDS` (default 15), kept below the unit's `TimeoutStartSec=20s` so a slow host or several UPS devices cannot stop the run before it writes `current.json`. Probes that no longer fit are skipped and listed in `probes_skipped`; `observer_watchdog_probe_budget_exhausted` is set and the run counts as a warning. A skipped Docker inventory shows as `HostDockerInventoryUnavailable`, and skipped UPS reads leave freshness unknown instead of stale.
+
 #### Docker OOM semantics
 
 Docker keeps `State.OOMKilled=true` until a container restarts, even when the kernel killed a single child process once and the container kept running. Alerting on that flag fires forever. The watchdog instead reads each running container's cgroup `oom_kill` counter (cgroup v2 `memory.events` or cgroup v1 `memory.oom_control`, under either the systemd or the cgroupfs driver layout) and keeps per-container kill timestamps in `state.json`.

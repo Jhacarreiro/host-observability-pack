@@ -88,7 +88,7 @@ def watchdog_state():
          "extended_available":0,"warning":0,"load5":0.0,"load15":0.0,"memory_used_ratio":-1.0,"temperature_max_celsius":-1.0,
          "filesystem_max_used_ratio":0.0,"temperature_warn_celsius":85.0,"filesystem_warn_ratio":0.90,"docker_inventory_ok":0,"mdraid_degraded":0,"mdraid_sync_active":0,"mdraid_sync_progress_percent":-1.0,
          "ups_configured":0,"ups_data_fresh":1,"ups_on_battery":0,"ups_low_battery":0,"systemd_failed":0,
-         "docker_unhealthy":0,"docker_restarting":0,"docker_oom_killed":0,"docker_stopped_restartable":0}
+         "docker_unhealthy":0,"docker_restarting":0,"docker_oom_killed":0,"docker_stopped_restartable":0,"probe_budget_exhausted":0}
     if not WATCHDOG_STATE.exists():return out
     out["present"]=True
     try:
@@ -102,7 +102,7 @@ def watchdog_state():
                 if d.get(key) is not None:out[key]=float(d[key])
             for key in ("memory_used_ratio","temperature_max_celsius","mdraid_sync_progress_percent"):
                 if d.get(key) is not None:out[key]=float(d[key])
-            for key in ("mdraid_degraded","mdraid_sync_active","ups_configured","ups_on_battery","ups_low_battery"):out[key]=1 if d.get(key) else 0
+            for key in ("mdraid_degraded","mdraid_sync_active","ups_configured","ups_on_battery","ups_low_battery","probe_budget_exhausted"):out[key]=1 if d.get(key) else 0
             out["ups_data_fresh"]=0 if d.get("ups_data_fresh") is False else 1
             out["systemd_failed"]=float((d.get("systemd_failed") or {}).get("count") or 0)
             inv=d.get("docker_inventory") or {}; out["docker_inventory_ok"]=1 if inv.get("ok") else 0
@@ -158,7 +158,7 @@ def collect():
       metric("observer_watchdog_would_recover",wd["would_recover"]),metric("observer_watchdog_critical_streak",wd["critical_streak"])]
     for key in ("extended_available","warning","load5","load15","memory_used_ratio","temperature_max_celsius","filesystem_max_used_ratio",
                 "mdraid_degraded","mdraid_sync_active","mdraid_sync_progress_percent","ups_configured","ups_data_fresh","ups_on_battery",
-                "ups_low_battery","systemd_failed","temperature_warn_celsius","filesystem_warn_ratio","docker_inventory_ok","docker_unhealthy","docker_restarting","docker_oom_killed","docker_stopped_restartable"):
+                "ups_low_battery","systemd_failed","temperature_warn_celsius","filesystem_warn_ratio","docker_inventory_ok","docker_unhealthy","docker_restarting","docker_oom_killed","docker_stopped_restartable","probe_budget_exhausted"):
         lines.append(metric(f"observer_watchdog_{key}",wd[key]))
     for typ,val in sorted(berrors.items()):lines.append(metric("observer_btrfs_device_errors_total",val,{"type":typ}))
     for p in probes:

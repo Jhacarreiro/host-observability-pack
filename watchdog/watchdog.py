@@ -22,6 +22,7 @@ TEMP_WARN=ef("WATCHDOG_TEMP_WARN_C",85); FS_WARN=ef("WATCHDOG_FILESYSTEM_WARN_RA
 FS_PATHS=[x.strip() for x in os.getenv("WATCHDOG_FILESYSTEMS","/").split(",") if x.strip()]
 UPSC=os.getenv("WATCHDOG_UPSC_BIN","").strip() or shutil.which("upsc") or ""
 SYSTEMCTL=os.getenv("WATCHDOG_SYSTEMCTL_BIN","").strip() or shutil.which("systemctl") or ""
+RUN_BUDGET=ef("WATCHDOG_RUN_BUDGET_SECONDS",15)
 CGROUP_ROOT=Path(os.getenv("WATCHDOG_CGROUP_ROOT","/sys/fs/cgroup")); OOM_WINDOW=ei("WATCHDOG_OOM_WINDOW_SECONDS",1800); OOM_KILLS=ei("WATCHDOG_OOM_RECURRING_KILLS",2)
 RUNTIME.mkdir(parents=True,exist_ok=True); EVENTS.mkdir(parents=True,exist_ok=True)
 
@@ -80,17 +81,26 @@ def btrfs():
         except Exception:pass
     return last/1000,maxc/1000
 
+# Every subprocess shares one run-wide budget so a slow host or many UPS devices cannot outrun the service's
+# TimeoutStartSec and leave current.json stale. Probes that no longer fit are skipped and reported.
+START=time.monotonic(); SKIPPED=[]
+def budget(timeout):
+    return min(timeout,RUN_BUDGET-(time.monotonic()-START))
+
 def docker_probe():
-    start=time.monotonic()
+    start=time.monotonic(); t=budget(DOCKER_TIMEOUT)
+    if t<0.5:SKIPPED.append("docker info"); return False,0.0,125
     try:
-        p=subprocess.run([DOCKER,"info"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=DOCKER_TIMEOUT,check=False)
+        p=subprocess.run([DOCKER,"info"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=t,check=False)
         return p.returncode==0,time.monotonic()-start,p.returncode
     except subprocess.TimeoutExpired:return False,time.monotonic()-start,124
     except Exception:return False,time.monotonic()-start,127
 
 def run(cmd,timeout=None):
+    t=budget(timeout or PROBE_TIMEOUT)
+    if t<0.5:SKIPPED.append(" ".join(Path(cmd[0]).name.split()+cmd[1:2])); return 125,"","run budget exhausted"
     try:
-        p=subprocess.run(cmd,capture_output=True,text=True,timeout=timeout or PROBE_TIMEOUT,check=False); return p.returncode,p.stdout,p.stderr
+        p=subprocess.run(cmd,capture_output=True,text=True,timeout=t,check=False); return p.returncode,p.stdout,p.stderr
     except subprocess.TimeoutExpired:return 124,"","timeout"
     except Exception as e:return 127,"",f"{type(e).__name__}: {e}"
 
@@ -123,6 +133,7 @@ def ups():
     fresh=True; tokens=set()
     for dev in devices:
         drc,dout,_=run([UPSC,dev])
+        if drc==125:fresh=None; break
         if drc!=0:fresh=False; continue
         for line in dout.splitlines():
             if line.startswith("ups.status:"):tokens.update(line.split(":",1)[1].split())
@@ -199,10 +210,8 @@ def bounded(path,limit=16000):
     try:return Path(path).read_text(errors="replace")[-limit:]
     except Exception as e:return f"{type(e).__name__}: {e}"
 def docker_ps():
-    try:
-        p=subprocess.run([DOCKER,"ps","--format","{{.Names}}|{{.Status}}|{{.Image}}"],capture_output=True,text=True,timeout=DOCKER_TIMEOUT,check=False)
-        return p.stdout[-16000:] if p.returncode==0 else f"rc={p.returncode}: {p.stderr[-2000:]}"
-    except Exception as e:return f"{type(e).__name__}: {e}"
+    rc,out,err=run([DOCKER,"ps","--format","{{.Names}}|{{.Status}}|{{.Image}}"],DOCKER_TIMEOUT)
+    return out[-16000:] if rc==0 else f"rc={rc}: {err[-2000:]}"
 def snap(now_iso,metrics,flagged,reason):
     stamp=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     obj={"timestamp":now_iso,"mode":MODE,"reason":reason,"metrics":metrics,"blocked_or_zombie":flagged,"proc_loadavg":bounded("/proc/loadavg"),
@@ -214,6 +223,7 @@ def main():
     lock=LOCKFILE.open("w")
     try:fcntl.flock(lock.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
     except BlockingIOError:return 0
+    global START; START=time.monotonic(); SKIPPED.clear()
     now=time.time(); now_iso=datetime.now(timezone.utc).isoformat(); load1,load5,load15=(float(x) for x in Path("/proc/loadavg").read_text().split()[:3])
     counts,flagged=proc_states(); d=counts.get("D",0); z=counts.get("Z",0); mem=meminfo(); swap=swap_ratio(mem); blast,bmax=btrfs(); dup,dlat,drc=docker_probe()
     temp=temperature_max(); fs_items,fs_max=filesystems(); md_degraded,md_sync,md_progress=mdraid(); ups_state=ups(); failed=systemd_failed()
@@ -226,12 +236,13 @@ def main():
     docker_warning=bool(inv.get("unhealthy") or inv.get("restarting") or inv.get("oom_killed"))
     warning=(d>=D_WARN or load1>=LOAD_WARN or swap>=SWAP_WARN or not dup or dlat>=DOCKER_WARN or blast>=BTRFS_WARN or
              (temp is not None and temp>=TEMP_WARN) or fs_max>=FS_WARN or md_degraded or ups_state["data_fresh"] is False or
-             ups_state["on_battery"] or bool(failed["count"]) or docker_warning)
+             ups_state["on_battery"] or bool(failed["count"]) or docker_warning or bool(SKIPPED))
     m={"timestamp":now_iso,"mode":MODE,"load1":load1,"load5":load5,"load15":load15,"dstate":d,"zombies":z,"swap_used_ratio":round(swap,6),
        "memory_used_ratio":round(memory_used_ratio(mem),6),"temperature_max_celsius":temp,"filesystems":fs_items,"filesystem_max_used_ratio":fs_max,
        "temperature_warn_celsius":TEMP_WARN,"filesystem_warn_ratio":FS_WARN,"mdraid_degraded":md_degraded,"mdraid_sync_active":md_sync,"mdraid_sync_progress_percent":md_progress,
        "ups_configured":ups_state["configured"],"ups_data_fresh":ups_state["data_fresh"],"ups_on_battery":ups_state["on_battery"],"ups_low_battery":ups_state["low_battery"],
        "systemd_failed":failed,"docker_inventory":inv,"docker_unhealthy":int(inv.get("unhealthy") or 0),"docker_restarting":int(inv.get("restarting") or 0),
+       "probe_budget_exhausted":bool(SKIPPED),"probes_skipped":list(SKIPPED),"run_budget_seconds":RUN_BUDGET,
        "docker_up":dup,"docker_latency_seconds":round(dlat,4),
        "docker_rc":drc,"docker_fail_streak":state["docker_fail_streak"],"btrfs_last_commit_seconds":blast,"btrfs_max_commit_seconds":bmax,
        "critical_candidate":candidate,"critical_streak":state["critical_streak"],"warning":warning,"would_recover":would}

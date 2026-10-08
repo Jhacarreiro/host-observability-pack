@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -46,6 +47,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     def container(name,status,policy,code):
         return {"Id":name,"Name":"/"+name,"State":{"Status":status,"ExitCode":code,"OOMKilled":False},"HostConfig":{"RestartPolicy":{"Name":policy}}}
+    real_run=wd.run
     fake=[container("crashed","exited","always",1),container("oneshot","exited","on-failure",0),
           container("stopped","exited","unless-stopped",143),container("manual","exited","no",137)]
     wd.run=lambda cmd,timeout=None:(0,"\n".join(c["Id"] for c in fake),"") if cmd[1]=="ps" else (0,json.dumps(fake),"")
@@ -53,6 +55,14 @@ with tempfile.TemporaryDirectory() as tmp:
     assert inv["ok"] and inv["stopped_restartable"]==1, "only the unexpected non-zero exit with a restart policy counts"
     wd.run=lambda cmd,timeout=None:(1,"","Cannot connect")
     assert wd.docker_inventory()["ok"] is False
+
+    wd.run=real_run
+    upsc=tmp/"upsc"; upsc.write_text('#!/bin/sh\nif [ "$1" = -l ]; then printf "a\\nb\\nc\\n"; else sleep 5; fi\n'); upsc.chmod(0o755)
+    wd.UPSC=str(upsc); wd.RUN_BUDGET=1.5; wd.START=time.monotonic(); wd.SKIPPED.clear()
+    started=time.monotonic(); u=wd.ups(); elapsed=time.monotonic()-started
+    assert elapsed<2.5, f"probes stop at the run budget, took {elapsed:.1f}s"
+    assert u["configured"] and u["data_fresh"] is None, "UPS reads cut by the budget are unknown, not stale"
+    assert wd.SKIPPED and wd.run(["true"])[0]==125, "probes past the budget are skipped and recorded"
 
     current=tmp/"current.json"
     current.write_text(json.dumps({"timestamp":"2026-01-01T00:00:00+00:00","docker_up":True,"warning":True,"load5":1.5,"memory_used_ratio":0.4,
