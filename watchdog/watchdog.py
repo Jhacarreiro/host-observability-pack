@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import fcntl, glob, json, os, re, shutil, subprocess, tempfile, time
+import fcntl, glob, json, os, re, shutil, subprocess, tempfile, threading, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -101,7 +101,10 @@ def run(cmd,timeout=None):
     if t<0.5:SKIPPED.append(" ".join(Path(cmd[0]).name.split()+cmd[1:2])); return 125,"","run budget exhausted"
     try:
         p=subprocess.run(cmd,capture_output=True,text=True,timeout=t,check=False); return p.returncode,p.stdout,p.stderr
-    except subprocess.TimeoutExpired:return 124,"","timeout"
+    except subprocess.TimeoutExpired:
+        # A timeout the budget shortened is a skipped probe (unknown), not a failed one.
+        if t<(timeout or PROBE_TIMEOUT):SKIPPED.append(" ".join(Path(cmd[0]).name.split()+cmd[1:2])); return 125,"","run budget exhausted"
+        return 124,"","timeout"
     except Exception as e:return 127,"",f"{type(e).__name__}: {e}"
 
 def temperature_max():
@@ -111,16 +114,28 @@ def temperature_max():
         except Exception:pass
     return round(max(vals),2) if vals else None
 
+def bounded_statvfs(path):
+    # statvfs can block on a hung network mount; run it in a daemon thread bounded by the run budget.
+    res={}
+    def worker():
+        try:res["st"]=os.statvfs(path)
+        except Exception as e:res["err"]=e
+    th=threading.Thread(target=worker,daemon=True); th.start(); t=budget(PROBE_TIMEOUT); th.join(max(0,t))
+    if th.is_alive() or t<=0:
+        SKIPPED.append(f"statvfs {path}"); raise TimeoutError("statvfs timed out")
+    if "err" in res:raise res["err"]
+    return res["st"]
+
 def filesystems():
     items=[]; seen=set()
     for path in FS_PATHS:
         try:
-            st=os.statvfs(path); total=st.f_blocks*st.f_frsize; key=(st.f_fsid,total)
+            st=bounded_statvfs(path); total=st.f_blocks*st.f_frsize; key=(st.f_fsid,total)
             if key in seen:continue
             seen.add(key); used=0 if total<=0 else max(0,min(1,(total-st.f_bavail*st.f_frsize)/total))
             items.append({"path":path,"used_ratio":round(used,6)})
         except Exception as e:items.append({"path":path,"error":f"{type(e).__name__}: {e}"})
-    ratios=[x["used_ratio"] for x in items if "used_ratio" in x]; return items,(max(ratios) if ratios else 0.0)
+    ratios=[x["used_ratio"] for x in items if "used_ratio" in x]; return items,(max(ratios) if ratios else None)
 
 def mdraid():
     text=bounded("/proc/mdstat"); m=re.search(r"(resync|recovery|reshape)\s*=\s*([0-9.]+)%",text)
@@ -232,7 +247,7 @@ def main():
     global START; START=time.monotonic(); SKIPPED.clear()
     now=time.time(); now_iso=datetime.now(timezone.utc).isoformat(); load1,load5,load15=(float(x) for x in Path("/proc/loadavg").read_text().split()[:3])
     counts,flagged=proc_states(); d=counts.get("D",0); z=counts.get("Z",0); mem=meminfo(); swap=swap_ratio(mem); blast,bmax=btrfs(); dup,dlat,drc=docker_probe()
-    temp=temperature_max(); fs_items,fs_max=filesystems(); md_degraded,md_sync,md_progress=mdraid(); ups_state=ups(); failed=systemd_failed()
+    temp=temperature_max(); fs_items,fs_max=filesystems(); fs_errors=sum(1 for x in fs_items if "error" in x); md_degraded,md_sync,md_progress=mdraid(); ups_state=ups(); failed=systemd_failed()
     inv=docker_inventory() if dup else {"ok":False,"problems":[],"error":"docker unavailable"}
     state=load_json(STATE,{"critical_streak":0,"docker_fail_streak":0,"would_recover":False,"last_snapshot_at":0})
     state["docker_fail_streak"]=0 if dup else int(state.get("docker_fail_streak",0))+1
@@ -241,10 +256,10 @@ def main():
     state["critical_streak"]=int(state.get("critical_streak",0))+1 if candidate else 0; would=state["critical_streak"]>=STREAK
     docker_warning=bool(inv.get("unhealthy") or inv.get("restarting") or inv.get("oom_killed"))
     warning=(d>=D_WARN or load1>=LOAD_WARN or swap>=SWAP_WARN or not dup or dlat>=DOCKER_WARN or blast>=BTRFS_WARN or
-             (temp is not None and temp>=TEMP_WARN) or fs_max>=FS_WARN or md_degraded or ups_state["data_fresh"] is False or
+             (temp is not None and temp>=TEMP_WARN) or (fs_max is not None and fs_max>=FS_WARN) or fs_errors or md_degraded or ups_state["data_fresh"] is False or
              ups_state["on_battery"] or bool(failed["count"]) or docker_warning or bool(SKIPPED))
     m={"timestamp":now_iso,"mode":MODE,"load1":load1,"load5":load5,"load15":load15,"dstate":d,"zombies":z,"swap_used_ratio":round(swap,6),
-       "memory_used_ratio":round(memory_used_ratio(mem),6),"temperature_max_celsius":temp,"filesystems":fs_items,"filesystem_max_used_ratio":fs_max,
+       "memory_used_ratio":round(memory_used_ratio(mem),6),"temperature_max_celsius":temp,"filesystems":fs_items,"filesystem_max_used_ratio":fs_max,"filesystem_errors":fs_errors,
        "temperature_warn_celsius":TEMP_WARN,"filesystem_warn_ratio":FS_WARN,"mdraid_degraded":md_degraded,"mdraid_sync_active":md_sync,"mdraid_sync_progress_percent":md_progress,
        "ups_configured":ups_state["configured"],"ups_data_fresh":ups_state["data_fresh"],"ups_on_battery":ups_state["on_battery"],"ups_low_battery":ups_state["low_battery"],
        "systemd_failed":failed,"docker_inventory":inv,"docker_unhealthy":int(inv.get("unhealthy") or 0),"docker_restarting":int(inv.get("restarting") or 0),

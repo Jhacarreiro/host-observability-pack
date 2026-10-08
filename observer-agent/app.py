@@ -86,7 +86,7 @@ def btrfs_stats():
 def watchdog_state():
     out={"expected":WATCHDOG_EXPECTED,"present":False,"age_seconds":-1.0,"docker_up":0,"would_recover":0,"critical_streak":0,
          "extended_available":0,"warning":0,"load5":0.0,"load15":0.0,"memory_used_ratio":-1.0,"temperature_max_celsius":-1.0,
-         "filesystem_max_used_ratio":0.0,"temperature_warn_celsius":85.0,"filesystem_warn_ratio":0.90,"docker_inventory_ok":0,"mdraid_degraded":0,"mdraid_sync_active":0,"mdraid_sync_progress_percent":-1.0,
+         "filesystem_max_used_ratio":0.0,"filesystem_errors":0,"temperature_warn_celsius":85.0,"filesystem_warn_ratio":0.90,"docker_inventory_ok":0,"mdraid_degraded":0,"mdraid_sync_active":0,"mdraid_sync_progress_percent":-1.0,
          "ups_configured":0,"ups_data_fresh":1,"ups_on_battery":0,"ups_low_battery":0,"systemd_failed":0,
          "docker_unhealthy":0,"docker_restarting":0,"docker_oom_killed":0,"docker_stopped_restartable":0,"probe_budget_exhausted":0}
     if not WATCHDOG_STATE.exists():return out
@@ -97,7 +97,9 @@ def watchdog_state():
         if "docker_inventory" in d:
             # Host-health fields are only present in watchdog state written by a release that collects them.
             out["extended_available"]=1; out["warning"]=1 if d.get("warning") else 0
-            for key in ("load5","load15","filesystem_max_used_ratio","docker_unhealthy","docker_restarting"):out[key]=float(d.get(key) or 0)
+            for key in ("load5","load15","filesystem_errors","docker_unhealthy","docker_restarting"):out[key]=float(d.get(key) or 0)
+            # -1 marks that no listed filesystem could be read; filesystem_errors counts the failures.
+            out["filesystem_max_used_ratio"]=-1.0 if d.get("filesystem_max_used_ratio") is None else float(d["filesystem_max_used_ratio"])
             for key in ("temperature_warn_celsius","filesystem_warn_ratio"):
                 if d.get(key) is not None:out[key]=float(d[key])
             for key in ("memory_used_ratio","temperature_max_celsius","mdraid_sync_progress_percent"):
@@ -158,7 +160,7 @@ def collect():
       metric("observer_watchdog_expected",1 if wd["expected"] else 0),metric("observer_watchdog_present",1 if wd["present"] else 0),
       metric("observer_watchdog_age_seconds",f"{wd['age_seconds']:.3f}"),metric("observer_watchdog_docker_up",wd["docker_up"]),
       metric("observer_watchdog_would_recover",wd["would_recover"]),metric("observer_watchdog_critical_streak",wd["critical_streak"])]
-    for key in ("extended_available","warning","load5","load15","memory_used_ratio","temperature_max_celsius","filesystem_max_used_ratio",
+    for key in ("extended_available","warning","load5","load15","memory_used_ratio","temperature_max_celsius","filesystem_max_used_ratio","filesystem_errors",
                 "mdraid_degraded","mdraid_sync_active","mdraid_sync_progress_percent","ups_configured","ups_data_fresh","ups_on_battery",
                 "ups_low_battery","systemd_failed","temperature_warn_celsius","filesystem_warn_ratio","docker_inventory_ok","docker_unhealthy","docker_restarting","docker_oom_killed","docker_stopped_restartable","probe_budget_exhausted"):
         lines.append(metric(f"observer_watchdog_{key}",wd[key]))

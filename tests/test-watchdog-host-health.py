@@ -65,6 +65,12 @@ with tempfile.TemporaryDirectory() as tmp:
     assert u["configured"] and u["data_fresh"] is None, "UPS reads cut by the budget are unknown, not stale"
     assert wd.SKIPPED and wd.run(["true"])[0]==125, "probes past the budget are skipped and recorded"
     assert wd.ups()["configured"] and wd.ups()["data_fresh"] is None, "a failed UPS listing is unknown, not no UPS"
+    wd.RUN_BUDGET=1.0; wd.START=time.monotonic(); wd.SKIPPED.clear()
+    assert wd.run(["sleep","5"])[0]==125 and wd.SKIPPED, "a timeout the budget shortened is a skip, not a failure"
+    wd.RUN_BUDGET=15; wd.START=time.monotonic()
+    wd.FS_PATHS=[str(tmp/"missing")]
+    items,ratio=wd.filesystems()
+    assert ratio is None and "error" in items[0], "an unreadable filesystem is an error, not 0% used"
     wd.SYSTEMCTL="/bin/false"; wd.RUN_BUDGET=15; wd.START=time.monotonic()
     assert wd.systemd_failed()["count"] is None and "error" in wd.systemd_failed()
 
@@ -82,6 +88,8 @@ with tempfile.TemporaryDirectory() as tmp:
     assert obs.watchdog_state()["ups_data_fresh"]==-1, "unknown UPS freshness is exported as -1, not fresh or stale"
     current.write_text(json.dumps({"timestamp":"2026-01-01T00:00:00+00:00","docker_inventory":{"ok":True},"systemd_failed":{"count":None,"units":[],"error":"x"}}))
     assert obs.watchdog_state()["systemd_failed"]==-1, "a failed systemctl probe is exported as -1, not as zero failed units"
+    current.write_text(json.dumps({"timestamp":"2026-01-01T00:00:00+00:00","docker_inventory":{"ok":True},"filesystem_max_used_ratio":None,"filesystem_errors":1}))
+    fs=obs.watchdog_state(); assert fs["filesystem_max_used_ratio"]==-1 and fs["filesystem_errors"]==1, "filesystem failures are exported, not 0% used"
     assert s["systemd_failed"]==2 and s["docker_oom_killed"]==1
     assert s["temperature_warn_celsius"]==70 and s["docker_inventory_ok"]==1
 
