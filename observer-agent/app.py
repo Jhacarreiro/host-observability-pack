@@ -88,7 +88,7 @@ def watchdog_state():
          "extended_available":0,"warning":0,"load5":0.0,"load15":0.0,"memory_used_ratio":-1.0,"temperature_max_celsius":-1.0,
          "filesystem_max_used_ratio":0.0,"filesystem_errors":0,"temperature_warn_celsius":85.0,"filesystem_warn_ratio":0.90,"docker_inventory_ok":0,"mdraid_degraded":0,"mdraid_sync_active":0,"mdraid_sync_progress_percent":-1.0,
          "ups_configured":0,"ups_data_fresh":1,"ups_on_battery":0,"ups_low_battery":0,"systemd_failed":0,
-         "docker_unhealthy":0,"docker_restarting":0,"docker_oom_killed":0,"docker_stopped_restartable":0,"probe_budget_exhausted":0}
+         "docker_unhealthy":0,"docker_restarting":0,"docker_oom_killed":0,"docker_stopped_restartable":0,"docker_oom_counter_unreadable":0,"probe_budget_exhausted":0}
     if not WATCHDOG_STATE.exists():return out
     out["present"]=True
     try:
@@ -111,6 +111,7 @@ def watchdog_state():
             sd=d.get("systemd_failed") or {}; out["systemd_failed"]=-1.0 if sd.get("count") is None and sd.get("error") else float(sd.get("count") or 0)
             inv=d.get("docker_inventory") or {}; out["docker_inventory_ok"]=1 if inv.get("ok") else 0
             out["docker_oom_killed"]=float(inv.get("oom_killed") or 0); out["docker_stopped_restartable"]=float(inv.get("stopped_restartable") or 0)
+            out["docker_oom_counter_unreadable"]=float(inv.get("oom_counter_unreadable") or 0)
         ts=d.get("timestamp")
         if ts:
             then=datetime.fromisoformat(str(ts).replace("Z","+00:00")); out["age_seconds"]=max(0,(datetime.now(timezone.utc)-then).total_seconds())
@@ -162,7 +163,7 @@ def collect():
       metric("observer_watchdog_would_recover",wd["would_recover"]),metric("observer_watchdog_critical_streak",wd["critical_streak"])]
     for key in ("extended_available","warning","load5","load15","memory_used_ratio","temperature_max_celsius","filesystem_max_used_ratio","filesystem_errors",
                 "mdraid_degraded","mdraid_sync_active","mdraid_sync_progress_percent","ups_configured","ups_data_fresh","ups_on_battery",
-                "ups_low_battery","systemd_failed","temperature_warn_celsius","filesystem_warn_ratio","docker_inventory_ok","docker_unhealthy","docker_restarting","docker_oom_killed","docker_stopped_restartable","probe_budget_exhausted"):
+                "ups_low_battery","systemd_failed","temperature_warn_celsius","filesystem_warn_ratio","docker_inventory_ok","docker_unhealthy","docker_restarting","docker_oom_killed","docker_stopped_restartable","docker_oom_counter_unreadable","probe_budget_exhausted"):
         lines.append(metric(f"observer_watchdog_{key}",wd[key]))
     for typ,val in sorted(berrors.items()):lines.append(metric("observer_btrfs_device_errors_total",val,{"type":typ}))
     for p in probes:

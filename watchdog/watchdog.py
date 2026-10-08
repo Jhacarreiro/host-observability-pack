@@ -210,22 +210,27 @@ def oom_assess(inv,state,now):
     Because the flag is sticky, a stop only counts as an OOM stop when the main process
     died from SIGKILL (exit 137); a later graceful stop (0 or 143) does not.
     """
-    first=("oom_tracking" not in state); prev=state.get("oom_tracking") or {}; tracking={}; recent=[]; active=0
+    first=("oom_tracking" not in state); prev=state.get("oom_tracking") or {}; tracking={}; recent=[]; active=0; unreadable=0
     for c in inv.pop("containers",[]):
         old=prev.get(c["id"]) or {}; events=[t for t in old.get("events",[]) if now-t<OOM_WINDOW]
         count=cgroup_oom_kills(c["id"]) if c["status"]=="running" else None
+        cgroup_unread=c["status"]=="running" and count is None; unreadable+=cgroup_unread
         if count is not None:
             base=old.get("count")
-            # The first run baselines existing counters; a restarted container gets a fresh counter.
-            new=(0 if first else count) if base is None else (count-base if count>=base else count)
+            # The first run, and a running container whose counter was unreadable, only baseline; a container
+            # first seen later or started again after being stopped counts from zero (it has a fresh counter).
+            if base is None:new=0 if (first or old.get("unreadable")) else count
+            else:new=count-base if count>=base else count
             events+=[now]*new
+        elif c["status"]=="running":count=old.get("count")  # keep the baseline across an unreadable run
         stopped=c["oom_flag"] and c.get("exit_code")==137 and c["status"] not in {"running","restarting"} and c["policy"] not in {"","no"}
         is_active=stopped or len(events)>=OOM_KILLS
         tracking[c["id"]]={"name":c["name"],"count":count,"events":events}
+        if c["status"]=="running" and cgroup_unread:tracking[c["id"]]["unreadable"]=True
         if events or c["oom_flag"]:recent.append({"name":c["name"],"status":c["status"],"oom_flag":c["oom_flag"],"kills_in_window":len(events),"active":is_active})
         if is_active:
             active+=1; inv["problems"].append({"name":c["name"],"status":c["status"],"restart_policy":c["policy"],"oom_kills_in_window":len(events),"stopped_by_oom":stopped})
-    state["oom_tracking"]=tracking; inv["oom_killed"]=active; inv["oom_recent"]=recent
+    state["oom_tracking"]=tracking; inv["oom_killed"]=active; inv["oom_recent"]=recent; inv["oom_counter_unreadable"]=unreadable
 
 def bounded(path,limit=16000):
     try:return Path(path).read_text(errors="replace")[-limit:]

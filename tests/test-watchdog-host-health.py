@@ -38,6 +38,14 @@ with tempfile.TemporaryDirectory() as tmp:
     kills("a",1)
     inv=assess(state,6000,("a","running","always",False))
     assert state["oom_tracking"]["a"]["events"]==[6000], "a restarted container's fresh counter is counted"
+    import shutil
+    kills("d",0); assess(state,7000,("a","running","always",False),("d","running","always",False))
+    shutil.rmtree(tmp/"cgroup"/"system.slice"/"docker-d.scope")
+    inv=assess(state,7060,("a","running","always",False),("d","running","always",False))
+    assert inv["oom_counter_unreadable"]==1 and state["oom_tracking"]["d"]["count"]==0, "an unreadable counter is reported and keeps its baseline"
+    state["oom_tracking"]["d"].update({"count":None,"unreadable":True})
+    kills("d",6)
+    assert assess(state,7180,("a","running","always",False),("d","running","always",False))["oom_killed"]==0, "a tracked container with no baseline is baselined, not replayed"
     kills("b",0)
     assess(state,6060,("b","running","no",False))
     assert sorted(state["oom_tracking"])==["b"], "removed containers are dropped from tracking"
