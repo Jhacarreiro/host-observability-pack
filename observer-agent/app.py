@@ -105,7 +105,8 @@ def watchdog_state():
             for key in ("mdraid_degraded","mdraid_sync_active","ups_configured","ups_on_battery","ups_low_battery","probe_budget_exhausted"):out[key]=1 if d.get(key) else 0
             # -1 marks freshness unknown (UPS reads cut by the run budget); the stale alert only matches 0.
             fresh=d.get("ups_data_fresh"); out["ups_data_fresh"]=0 if fresh is False else (-1 if fresh is None and d.get("ups_configured") else 1)
-            out["systemd_failed"]=float((d.get("systemd_failed") or {}).get("count") or 0)
+            # -1 marks a systemctl probe that ran but failed; 0 means none failed or systemctl is absent.
+            sd=d.get("systemd_failed") or {}; out["systemd_failed"]=-1.0 if sd.get("count") is None and sd.get("error") else float(sd.get("count") or 0)
             inv=d.get("docker_inventory") or {}; out["docker_inventory_ok"]=1 if inv.get("ok") else 0
             out["docker_oom_killed"]=float(inv.get("oom_killed") or 0); out["docker_stopped_restartable"]=float(inv.get("stopped_restartable") or 0)
         ts=d.get("timestamp")

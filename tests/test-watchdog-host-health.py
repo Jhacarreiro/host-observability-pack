@@ -64,6 +64,9 @@ with tempfile.TemporaryDirectory() as tmp:
     assert elapsed<2.5, f"probes stop at the run budget, took {elapsed:.1f}s"
     assert u["configured"] and u["data_fresh"] is None, "UPS reads cut by the budget are unknown, not stale"
     assert wd.SKIPPED and wd.run(["true"])[0]==125, "probes past the budget are skipped and recorded"
+    assert wd.ups()["configured"] and wd.ups()["data_fresh"] is None, "a failed UPS listing is unknown, not no UPS"
+    wd.SYSTEMCTL="/bin/false"; wd.RUN_BUDGET=15; wd.START=time.monotonic()
+    assert wd.systemd_failed()["count"] is None and "error" in wd.systemd_failed()
 
     current=tmp/"current.json"
     current.write_text(json.dumps({"timestamp":"2026-01-01T00:00:00+00:00","docker_up":True,"warning":True,"load5":1.5,"memory_used_ratio":0.4,
@@ -77,6 +80,8 @@ with tempfile.TemporaryDirectory() as tmp:
     assert s["ups_configured"]==1 and s["ups_data_fresh"]==0
     current.write_text(json.dumps({"timestamp":"2026-01-01T00:00:00+00:00","docker_inventory":{"ok":True},"ups_configured":True,"ups_data_fresh":None}))
     assert obs.watchdog_state()["ups_data_fresh"]==-1, "unknown UPS freshness is exported as -1, not fresh or stale"
+    current.write_text(json.dumps({"timestamp":"2026-01-01T00:00:00+00:00","docker_inventory":{"ok":True},"systemd_failed":{"count":None,"units":[],"error":"x"}}))
+    assert obs.watchdog_state()["systemd_failed"]==-1, "a failed systemctl probe is exported as -1, not as zero failed units"
     assert s["systemd_failed"]==2 and s["docker_oom_killed"]==1
     assert s["temperature_warn_celsius"]==70 and s["docker_inventory_ok"]==1
 

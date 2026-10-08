@@ -129,7 +129,10 @@ def mdraid():
 def ups():
     out={"configured":False,"data_fresh":None,"on_battery":False,"low_battery":False}
     if not UPSC:return out
-    rc,listing,_=run([UPSC,"-l"]); devices=[x.strip() for x in listing.splitlines() if x.strip()] if rc==0 else []
+    rc,listing,err=run([UPSC,"-l"])
+    # A failed listing (NUT unreachable or cut by the budget) is unknown, not "no UPS".
+    if rc!=0:out.update({"configured":True,"data_fresh":None,"error":(err or listing).strip()[-500:]}); return out
+    devices=[x.strip() for x in listing.splitlines() if x.strip()]
     fresh=True; tokens=set()
     for dev in devices:
         drc,dout,_=run([UPSC,dev])
@@ -141,9 +144,10 @@ def ups():
 
 def systemd_failed():
     if not SYSTEMCTL:return {"count":None,"units":[]}
-    rc,out,_=run([SYSTEMCTL,"--failed","--no-legend","--no-pager","--plain"])
-    units=[x.split()[0] for x in out.splitlines() if x.split()] if rc==0 else []
-    return {"count":len(units) if rc==0 else None,"units":units}
+    rc,out,err=run([SYSTEMCTL,"--failed","--no-legend","--no-pager","--plain"])
+    if rc!=0:return {"count":None,"units":[],"error":(err or out).strip()[-500:]}
+    units=[x.split()[0] for x in out.splitlines() if x.split()]
+    return {"count":len(units),"units":units}
 
 def docker_inventory():
     inv={"ok":False,"total":0,"running":0,"unhealthy":0,"restarting":0,"oom_killed":0,"stopped_restartable":0,"problems":[],"containers":[]}
