@@ -84,12 +84,27 @@ def btrfs_stats():
     return last/1000.0,maxc/1000.0,errors
 
 def watchdog_state():
-    out={"expected":WATCHDOG_EXPECTED,"present":False,"age_seconds":-1.0,"docker_up":0,"would_recover":0,"critical_streak":0}
+    out={"expected":WATCHDOG_EXPECTED,"present":False,"age_seconds":-1.0,"docker_up":0,"would_recover":0,"critical_streak":0,
+         "extended_available":0,"warning":0,"load5":0.0,"load15":0.0,"memory_used_ratio":-1.0,"temperature_max_celsius":-1.0,
+         "filesystem_max_used_ratio":0.0,"mdraid_degraded":0,"mdraid_sync_active":0,"mdraid_sync_progress_percent":-1.0,
+         "ups_configured":0,"ups_data_fresh":1,"ups_on_battery":0,"ups_low_battery":0,"systemd_failed":0,
+         "docker_unhealthy":0,"docker_restarting":0,"docker_oom_killed":0,"docker_stopped_restartable":0}
     if not WATCHDOG_STATE.exists():return out
     out["present"]=True
     try:
         d=json.loads(WATCHDOG_STATE.read_text()); out["docker_up"]=1 if d.get("docker_up") else 0
         out["would_recover"]=1 if d.get("would_recover") else 0; out["critical_streak"]=float(d.get("critical_streak") or 0)
+        if "docker_inventory" in d:
+            # Host-health fields are only present in watchdog state written by a release that collects them.
+            out["extended_available"]=1; out["warning"]=1 if d.get("warning") else 0
+            for key in ("load5","load15","filesystem_max_used_ratio","docker_unhealthy","docker_restarting"):out[key]=float(d.get(key) or 0)
+            for key in ("memory_used_ratio","temperature_max_celsius","mdraid_sync_progress_percent"):
+                if d.get(key) is not None:out[key]=float(d[key])
+            for key in ("mdraid_degraded","mdraid_sync_active","ups_configured","ups_on_battery","ups_low_battery"):out[key]=1 if d.get(key) else 0
+            out["ups_data_fresh"]=0 if d.get("ups_data_fresh") is False else 1
+            out["systemd_failed"]=float((d.get("systemd_failed") or {}).get("count") or 0)
+            inv=d.get("docker_inventory") or {}
+            out["docker_oom_killed"]=float(inv.get("oom_killed") or 0); out["docker_stopped_restartable"]=float(inv.get("stopped_restartable") or 0)
         ts=d.get("timestamp")
         if ts:
             then=datetime.fromisoformat(str(ts).replace("Z","+00:00")); out["age_seconds"]=max(0,(datetime.now(timezone.utc)-then).total_seconds())
@@ -139,6 +154,10 @@ def collect():
       metric("observer_watchdog_expected",1 if wd["expected"] else 0),metric("observer_watchdog_present",1 if wd["present"] else 0),
       metric("observer_watchdog_age_seconds",f"{wd['age_seconds']:.3f}"),metric("observer_watchdog_docker_up",wd["docker_up"]),
       metric("observer_watchdog_would_recover",wd["would_recover"]),metric("observer_watchdog_critical_streak",wd["critical_streak"])]
+    for key in ("extended_available","warning","load5","load15","memory_used_ratio","temperature_max_celsius","filesystem_max_used_ratio",
+                "mdraid_degraded","mdraid_sync_active","mdraid_sync_progress_percent","ups_configured","ups_data_fresh","ups_on_battery",
+                "ups_low_battery","systemd_failed","docker_unhealthy","docker_restarting","docker_oom_killed","docker_stopped_restartable"):
+        lines.append(metric(f"observer_watchdog_{key}",wd[key]))
     for typ,val in sorted(berrors.items()):lines.append(metric("observer_btrfs_device_errors_total",val,{"type":typ}))
     for p in probes:
         labels={"kind":p["kind"],"target":p["target"]}; lines.append(metric("observer_probe_success",1 if p["success"] else 0,labels)); lines.append(metric("observer_probe_duration_seconds",f"{p['duration']:.6f}",labels))
