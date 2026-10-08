@@ -151,7 +151,10 @@ The included Prometheus rules cover:
 - heavy swap usage combined with active swap churn;
 - Btrfs device errors;
 - slow Btrfs commits;
-- optional watchdog missing/stale/Docker-unresponsive/recovery-gate states.
+- optional watchdog missing/stale/Docker-unresponsive/recovery-gate states;
+- optional watchdog host health: hardware temperature, filesystem usage, degraded MD RAID, UPS telemetry/battery, failed systemd units, and Docker containers that are unhealthy, stuck restarting, stopped despite a restart policy, or repeatedly OOM-killed.
+
+Host-health rules are gated on `observer_watchdog_extended_available`, so they stay silent with a watchdog that does not collect those fields.
 
 The defaults are deliberately conservative. Tune thresholds for your hardware and workload before depending on them operationally.
 
@@ -230,6 +233,33 @@ Docker unavailable AND D-state >= 2 AND load1 >= 8
 ```
 
 `would_recover=1` is reached only after five consecutive hard candidates.
+
+Each run also records host health in `current.json`:
+
+| Signal | Source | Watchdog setting |
+|---|---|---|
+| load5/load15, memory used ratio | `/proc/loadavg`, `/proc/meminfo` | — |
+| highest hardware temperature | `/sys/class/hwmon/*/temp*_input` | `WATCHDOG_TEMP_WARN_C` |
+| filesystem usage | `statvfs` on each listed path | `WATCHDOG_FILESYSTEMS`, `WATCHDOG_FILESYSTEM_WARN_RATIO` |
+| MD RAID degraded / resync | `/proc/mdstat` | — |
+| UPS configured / fresh / on battery / low battery | NUT `upsc`, skipped when not installed | `WATCHDOG_UPSC_BIN` |
+| failed systemd units | `systemctl --failed` | `WATCHDOG_SYSTEMCTL_BIN` |
+| Docker container states | `docker ps -aq` + `docker inspect` | — |
+| Docker OOM kills | cgroup `oom_kill` counter per running container | `WATCHDOG_OOM_WINDOW_SECONDS`, `WATCHDOG_OOM_RECURRING_KILLS` |
+
+`WATCHDOG_TEMP_WARN_C` and `WATCHDOG_FILESYSTEM_WARN_RATIO` are exported as `observer_watchdog_temperature_warn_celsius` and `observer_watchdog_filesystem_warn_ratio`, and the alert rules compare against them, so changing the watchdog setting changes when the alert fires.
+
+`HostDockerContainerStopped` counts a container only when it is stopped with a restart policy other than `no` **and** an exit code other than `0` (a finished one-shot, which `on-failure` does not restart) or `143` (a graceful `docker stop`). A manual stop of a process that ignores SIGTERM exits `137` and still counts; set `--restart no` or remove such containers.
+
+Docker health rules are gated on `observer_watchdog_docker_inventory_ok`. When `docker info` works but `docker ps`/`docker inspect` fails, `HostDockerInventoryUnavailable` fires instead of the Docker rules silently reading zeros.
+
+All probe subprocesses share one run budget, `WATCHDOG_RUN_BUDGET_SECONDS` (default 15), kept below the unit's `TimeoutStartSec=20s` so a slow host or several UPS devices cannot stop the run before it writes `current.json`. Probes that no longer fit are skipped and listed in `probes_skipped`; `observer_watchdog_probe_budget_exhausted` is set and the run counts as a warning. A skipped Docker inventory shows as `HostDockerInventoryUnavailable`, and skipped UPS reads leave freshness unknown (`observer_watchdog_ups_data_fresh` is `-1`) instead of stale. A failed `upsc -l` (NUT installed but unreachable) also reports the UPS as configured with unknown freshness rather than as absent, and a failed `systemctl --failed` exports `observer_watchdog_systemd_failed` as `-1` rather than `0`. A filesystem whose `statvfs` fails or hangs past the budget is counted in `observer_watchdog_filesystem_errors` (the run counts as a warning), and `observer_watchdog_filesystem_max_used_ratio` is `-1` when no listed filesystem could be read. A UPS read that times out because the budget shortened it is unknown, not stale. The Docker liveness probe runs first and is never skipped, so `docker_up` always reflects a real probe.
+
+#### Docker OOM semantics
+
+Docker keeps `State.OOMKilled=true` until a container restarts, even when the kernel killed a single child process once and the container kept running. Alerting on that flag fires forever. The watchdog instead reads each running container's cgroup `oom_kill` counter (cgroup v2 `memory.events` or cgroup v1 `memory.oom_control`, under either the systemd or the cgroupfs driver layout) and keeps per-container kill timestamps in `state.json`.
+
+A container counts towards `observer_watchdog_docker_oom_killed` only when it has at least `WATCHDOG_OOM_RECURRING_KILLS` (default 2) new kills within `WATCHDOG_OOM_WINDOW_SECONDS` (default 1800), or when it was stopped by an OOM (sticky flag set and the main process exited `137`) and has a restart policy other than `no`. A later graceful stop (exit `0` or `143`) of a container that once had an OOM does not count. An isolated kill is listed in `current.json` under `docker_inventory.oom_recent` with `active=false` and does not alert. The first run baselines existing counters, so past kills never alert after an install or upgrade. A running container whose counter cannot be read is counted in `observer_watchdog_docker_oom_counter_unreadable`; its previous baseline is kept, and when the counter becomes readable again it is baselined rather than replayed as new kills.
 
 **v0.1.x is observe-only.** The watchdog records evidence and exposes when a future recovery actuator might be justified, but it does not kill processes, restart Docker, or reboot the machine.
 

@@ -120,3 +120,113 @@ groups:
           scope: host-observability-pack
         annotations:
           summary: "Sustained multi-signal host condition reached the recovery gate"
+
+  - name: host-health
+    rules:
+      - alert: HostTemperatureHigh
+        expr: (observer_watchdog_extended_available == 1) and (observer_watchdog_temperature_max_celsius >= observer_watchdog_temperature_warn_celsius)
+        for: 5m
+        labels:
+          severity: warning
+          scope: host-observability-pack
+        annotations:
+          summary: "Highest host hardware temperature is at or above WATCHDOG_TEMP_WARN_C"
+
+      - alert: HostFilesystemHighUsage
+        expr: (observer_watchdog_extended_available == 1) and (observer_watchdog_filesystem_max_used_ratio >= observer_watchdog_filesystem_warn_ratio)
+        for: 15m
+        labels:
+          severity: warning
+          scope: host-observability-pack
+        annotations:
+          summary: "A watched filesystem is above WATCHDOG_FILESYSTEM_WARN_RATIO"
+
+      - alert: HostMdRaidDegraded
+        expr: (observer_watchdog_extended_available == 1) and (observer_watchdog_mdraid_degraded == 1)
+        for: 1m
+        labels:
+          severity: critical
+          scope: host-observability-pack
+        annotations:
+          summary: "An MD RAID array is degraded"
+
+      - alert: HostUpsTelemetryStale
+        expr: (observer_watchdog_extended_available == 1) and (observer_watchdog_ups_configured == 1) and (observer_watchdog_ups_data_fresh == 0)
+        for: 5m
+        labels:
+          severity: warning
+          scope: host-observability-pack
+        annotations:
+          summary: "UPS is configured but NUT reports stale telemetry"
+
+      - alert: HostUpsOnBattery
+        expr: (observer_watchdog_extended_available == 1) and (observer_watchdog_ups_configured == 1) and (observer_watchdog_ups_on_battery == 1)
+        for: 30s
+        labels:
+          severity: critical
+          scope: host-observability-pack
+        annotations:
+          summary: "UPS reports the host is running on battery"
+
+      - alert: HostUpsLowBattery
+        expr: (observer_watchdog_extended_available == 1) and (observer_watchdog_ups_configured == 1) and (observer_watchdog_ups_low_battery == 1)
+        for: 10s
+        labels:
+          severity: critical
+          scope: host-observability-pack
+        annotations:
+          summary: "UPS reports low battery"
+
+      - alert: HostSystemdFailedUnits
+        expr: (observer_watchdog_extended_available == 1) and (observer_watchdog_systemd_failed > 0)
+        for: 5m
+        labels:
+          severity: warning
+          scope: host-observability-pack
+        annotations:
+          summary: "One or more systemd units are in failed state"
+
+      - alert: HostDockerContainerUnhealthy
+        expr: (observer_watchdog_docker_inventory_ok == 1) and (observer_watchdog_docker_unhealthy > 0)
+        for: 5m
+        labels:
+          severity: warning
+          scope: host-observability-pack
+        annotations:
+          summary: "One or more running containers report unhealthy"
+
+      - alert: HostDockerContainerRestarting
+        expr: (observer_watchdog_docker_inventory_ok == 1) and (observer_watchdog_docker_restarting > 0)
+        for: 2m
+        labels:
+          severity: critical
+          scope: host-observability-pack
+        annotations:
+          summary: "One or more containers are stuck restarting"
+
+      - alert: HostDockerContainerStopped
+        expr: (observer_watchdog_docker_inventory_ok == 1) and (observer_watchdog_docker_stopped_restartable > 0)
+        for: 2m
+        labels:
+          severity: warning
+          scope: host-observability-pack
+        annotations:
+          summary: "A container with a restart policy stopped unexpectedly (exit code other than 0 or 143)"
+
+      - alert: HostDockerOomKilled
+        expr: (observer_watchdog_docker_inventory_ok == 1) and (observer_watchdog_docker_oom_killed > 0)
+        for: 1m
+        labels:
+          severity: critical
+          scope: host-observability-pack
+        annotations:
+          summary: "A container has recurring OOM kills or was left stopped by an OOM"
+
+      - alert: HostDockerInventoryUnavailable
+        expr: (observer_watchdog_extended_available == 1) and (observer_watchdog_docker_up == 1) and (observer_watchdog_docker_inventory_ok == 0)
+        for: 5m
+        labels:
+          severity: warning
+          scope: host-observability-pack
+        annotations:
+          summary: "Watchdog cannot list or inspect containers, so Docker health alerts are blind"
