@@ -1,5 +1,7 @@
 # Host Observability Pack
 
+Investigate Linux host stalls, network failures, Docker outages and Btrfs issues with a compact self-hosted monitoring stack. The watchdog is observe-only; start with the deployment and alerting documentation below.
+
 [![CI](https://github.com/Jhacarreiro/host-observability-pack/actions/workflows/ci.yml/badge.svg)](https://github.com/Jhacarreiro/host-observability-pack/actions/workflows/ci.yml)
 
 A compact, self-hosted Linux observability stack for diagnosing host stalls, blocked processes, swap pressure, Btrfs trouble, network failures, and Docker outages — without turning monitoring into another large platform to operate.
