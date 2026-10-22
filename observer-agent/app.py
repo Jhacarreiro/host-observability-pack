@@ -29,6 +29,33 @@ def load_probes():
         d=json.loads(PROBES.read_text()); return {k:list(d.get(k) or []) for k in ("icmp","dns","http")}
     except Exception:return {"icmp":[],"dns":[],"http":[]}
 
+def clamav_scan_state():
+    running=0
+    start_unixtime=0.0
+    try:
+        btime=0
+        for line in (HOST_PROC/"stat").read_text(errors="replace").splitlines():
+            if line.startswith("btime "):
+                btime=int(line.split()[1]); break
+        clk=os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+        for proc in HOST_PROC.iterdir():
+            if not proc.name.isdigit(): continue
+            try:
+                comm=(proc/"comm").read_text(errors="replace").strip()
+                if comm != "clamscan": continue
+                running=1
+                raw=(proc/"stat").read_text(errors="replace")
+                right=raw.rfind(")")
+                fields=raw[right+2:].split()
+                if btime and len(fields)>19:
+                    started=btime+(float(fields[19])/clk)
+                    if start_unixtime == 0.0 or started < start_unixtime:
+                        start_unixtime=started
+            except Exception: pass
+    except Exception: pass
+    return running,start_unixtime
+
+
 def process_states():
     counts={}; flagged=[]
     try: entries=HOST_PROC.iterdir()
@@ -87,13 +114,24 @@ def watchdog_state():
     out={"expected":WATCHDOG_EXPECTED,"present":False,"age_seconds":-1.0,"docker_up":0,"would_recover":0,"critical_streak":0,
          "extended_available":0,"warning":0,"load5":0.0,"load15":0.0,"memory_used_ratio":-1.0,"temperature_max_celsius":-1.0,
          "filesystem_max_used_ratio":0.0,"filesystem_errors":0,"temperature_warn_celsius":85.0,"filesystem_warn_ratio":0.90,"docker_inventory_ok":0,"mdraid_degraded":0,"mdraid_sync_active":0,"mdraid_sync_progress_percent":-1.0,
-         "ups_configured":0,"ups_data_fresh":1,"ups_on_battery":0,"ups_low_battery":0,"systemd_failed":0,
-         "docker_unhealthy":0,"docker_restarting":0,"docker_oom_killed":0,"docker_stopped_restartable":0,"docker_oom_counter_unreadable":0,"probe_budget_exhausted":0}
+         "ups_configured":0,"ups_data_fresh":1,"ups_on_battery":0,"ups_low_battery":0,"systemd_failed":-1,"systemd_collection_success":0,
+         "docker_unhealthy":0,"docker_restarting":0,"docker_oom_killed":0,"docker_stopped_restartable":0,"docker_oom_counter_unreadable":0,"probe_budget_exhausted":0,"platform_info_configured":0,"platform_info_auth_ok":0,"platform_info_ok":1,"cpu_usage_ratio":-1.0,"runtime_bind_access_ok":1,"tosdaemon_cpu_available":0,"tosdaemon_cpu_percent_one_core":0.0}
     if not WATCHDOG_STATE.exists():return out
     out["present"]=True
     try:
         d=json.loads(WATCHDOG_STATE.read_text()); out["docker_up"]=1 if d.get("docker_up") else 0
         out["would_recover"]=1 if d.get("would_recover") else 0; out["critical_streak"]=float(d.get("critical_streak") or 0)
+        failed=d.get("systemd_failed") or {}
+        count=failed.get("count")
+        if failed.get("ok") is True and type(count) is int and count >= 0:
+            out["systemd_failed"]=count
+            out["systemd_collection_success"]=1
+        if "platform_info_ok" in d:
+            out["extended_available"]=1
+            for key in ("platform_info_configured","platform_info_auth_ok","platform_info_ok","runtime_bind_access_ok","tosdaemon_cpu_available"):
+                out[key]=1 if d.get(key) else 0
+            for key in ("cpu_usage_ratio","tosdaemon_cpu_percent_one_core"):
+                if d.get(key) is not None:out[key]=float(d[key])
         if "docker_inventory" in d:
             # Host-health fields are only present in watchdog state written by a release that collects them.
             out["extended_available"]=1; out["warning"]=1 if d.get("warning") else 0
@@ -107,8 +145,6 @@ def watchdog_state():
             for key in ("mdraid_degraded","mdraid_sync_active","ups_configured","ups_on_battery","ups_low_battery","probe_budget_exhausted"):out[key]=1 if d.get(key) else 0
             # -1 marks freshness unknown (UPS reads cut by the run budget); the stale alert only matches 0.
             fresh=d.get("ups_data_fresh"); out["ups_data_fresh"]=0 if fresh is False else (-1 if fresh is None and d.get("ups_configured") else 1)
-            # -1 marks a systemctl probe that ran but failed; 0 means none failed or systemctl is absent.
-            sd=d.get("systemd_failed") or {}; out["systemd_failed"]=-1.0 if sd.get("count") is None and sd.get("error") else float(sd.get("count") or 0)
             inv=d.get("docker_inventory") or {}; out["docker_inventory_ok"]=1 if inv.get("ok") else 0
             out["docker_oom_killed"]=float(inv.get("oom_killed") or 0); out["docker_stopped_restartable"]=float(inv.get("stopped_restartable") or 0)
             out["docker_oom_counter_unreadable"]=float(inv.get("oom_counter_unreadable") or 0)
@@ -144,7 +180,7 @@ def collect():
     now=time.time()
     try:load1=float((HOST_PROC/"loadavg").read_text().split()[0])
     except Exception:load1=0.0
-    counts,flagged=process_states(); mem=key_values(HOST_PROC/"meminfo",1024); vm=key_values(HOST_PROC/"vmstat")
+    counts,flagged=process_states(); clamav_running,clamav_start=clamav_scan_state(); mem=key_values(HOST_PROC/"meminfo",1024); vm=key_values(HOST_PROC/"vmstat")
     st,sf=mem.get("SwapTotal",0),mem.get("SwapFree",0); sr=0.0 if st<=0 else max(0,min(1,(st-sf)/st))
     blast,bmax,berrors=btrfs_stats(); wd=watchdog_state(); cfg=load_probes(); probes=[]
     for t in cfg["icmp"]:
@@ -155,6 +191,7 @@ def collect():
         ok,d=probe_http(str(t)); probes.append({"kind":"http","target":str(t),"success":ok,"duration":d})
     lines=[metric("observer_agent_up",1),metric("observer_agent_last_collection_unixtime",f"{now:.3f}"),metric("observer_host_load1",load1),
       metric("observer_host_procs_blocked",counts.get("D",0)),metric("observer_host_zombies",counts.get("Z",0)),
+      metric("observer_host_clamav_scan_running",clamav_running),metric("observer_host_clamav_scan_start_unixtime",f"{clamav_start:.3f}"),
       metric("observer_host_swap_total_bytes",st),metric("observer_host_swap_free_bytes",sf),metric("observer_host_swap_used_ratio",f"{sr:.6f}"),
       metric("observer_vmstat_pswpin_total",vm.get("pswpin",0)),metric("observer_vmstat_pswpout_total",vm.get("pswpout",0)),
       metric("observer_btrfs_last_commit_seconds",f"{blast:.6f}"),metric("observer_btrfs_max_commit_seconds",f"{bmax:.6f}"),
@@ -165,10 +202,14 @@ def collect():
                 "mdraid_degraded","mdraid_sync_active","mdraid_sync_progress_percent","ups_configured","ups_data_fresh","ups_on_battery",
                 "ups_low_battery","systemd_failed","temperature_warn_celsius","filesystem_warn_ratio","docker_inventory_ok","docker_unhealthy","docker_restarting","docker_oom_killed","docker_stopped_restartable","docker_oom_counter_unreadable","probe_budget_exhausted"):
         lines.append(metric(f"observer_watchdog_{key}",wd[key]))
+    for key in ("systemd_collection_success","platform_info_configured","platform_info_auth_ok","platform_info_ok","cpu_usage_ratio","runtime_bind_access_ok","tosdaemon_cpu_available","tosdaemon_cpu_percent_one_core"):
+        lines.append(metric(f"observer_watchdog_{key}",wd[key]))
+    lines.append(metric("observer_watchdog_watchdog_warning",wd["warning"]))
     for typ,val in sorted(berrors.items()):lines.append(metric("observer_btrfs_device_errors_total",val,{"type":typ}))
     for p in probes:
         labels={"kind":p["kind"],"target":p["target"]}; lines.append(metric("observer_probe_success",1 if p["success"] else 0,labels)); lines.append(metric("observer_probe_duration_seconds",f"{p['duration']:.6f}",labels))
     status={"collected_at":datetime.now(timezone.utc).isoformat(),"load1":load1,"dstate":counts.get("D",0),"zombies":counts.get("Z",0),
+      "clamav_scan":{"running":bool(clamav_running),"start_unixtime":clamav_start},
       "swap_used_ratio":sr,"btrfs_last_commit_seconds":blast,"watchdog":wd,"probes":probes,"blocked_or_zombie":flagged}
     return "\n".join(lines)+"\n",status
 
