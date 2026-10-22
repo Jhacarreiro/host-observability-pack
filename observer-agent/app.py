@@ -123,7 +123,9 @@ def watchdog_state():
         out["would_recover"]=1 if d.get("would_recover") else 0; out["critical_streak"]=float(d.get("critical_streak") or 0)
         failed=d.get("systemd_failed") or {}
         count=failed.get("count")
-        if failed.get("ok") is True and type(count) is int and count >= 0:
+        # Older watchdog snapshots report success through a valid count and no error.
+        collection_ok=failed.get("ok") is True or ("ok" not in failed and not failed.get("error"))
+        if collection_ok and type(count) is int and count >= 0:
             out["systemd_failed"]=count
             out["systemd_collection_success"]=1
         if "platform_info_ok" in d:
